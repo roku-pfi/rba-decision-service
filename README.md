@@ -22,15 +22,18 @@ Contracts: `rba-contracts` v0.1.0 (ADR-0008). Feature + Freeman count state:
 ## Setup
 
 ```bash
+# Shared Redis + Postgres live in rba-infra (not this repo):
+cd ../rba-infra && docker compose up -d && cd -
+
 # from this repo
 python3 -m venv .venv && source .venv/bin/activate
 pip install -U pip
 pip install -e ../rba-features -e ../rba-contracts -e ".[dev]"
 
-# optional: Redis + Postgres
-docker compose up -d
-
 pytest -q
+
+REDIS_URL=redis://localhost:6379/0 \
+DATABASE_URL=postgresql+psycopg://rba:rba@localhost:5432/rba_decision \
 uvicorn rba_decision_service.main:app --reload --port 8000
 ```
 
@@ -66,7 +69,7 @@ curl -s localhost:8000/risk/evaluate -H 'content-type: application/json' -d '{
 | Variable | Default | Notes |
 |---|---|---|
 | `REDIS_URL` | `redis://localhost:6379/0` | use `memory://` for in-process store |
-| `DATABASE_URL` | `postgresql+psycopg://rba:rba@localhost:5432/rba_decision` | |
+| `DATABASE_URL` | `postgresql+psycopg://rba:rba@localhost:5432/rba_decision` | DB created by `rba-infra` init |
 | `USE_MEMORY_DB` | `false` | sqlite StaticPool for tests |
 | `POLICY_CONFIG_PATH` | `config/policy-config.yaml` | |
 | `FREEMAN_ARTIFACT_PATH` | `artifacts/freeman-0.1.0.json` | |

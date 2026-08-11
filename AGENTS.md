@@ -28,7 +28,7 @@ src/rba_decision_service/
 config/policy-config.yaml
 artifacts/freeman-0.1.0.json
 tests/test_evaluate.py
-docker-compose.yml        # Redis + Postgres only
+docker-compose.yml        # REMOVED — shared stack lives in ../rba-infra
 ```
 
 ## Guardrails
@@ -39,12 +39,14 @@ docker-compose.yml        # Redis + Postgres only
 - Model stays **inline** in Phase 3 (sidecar is Phase 6).
 - Profile **sync write** is a Phase 3 convenience (`PROFILE_WRITE_MODE=sync`);
   Phase 4 moves ownership to `profile-service` (`none`).
+- Do **not** add Redis/Postgres compose here — use `../rba-infra`.
 - Only commit when explicitly asked; Conventional Commits; never commit secrets
   or raw datasets. The Freeman JSON artifact (~0.8 MB) is OK to commit for demos.
 
 ## Setup
 
 ```bash
+cd ../rba-infra && docker compose up -d && cd -
 python3 -m venv .venv && source .venv/bin/activate
 pip install -e ../rba-features -e ../rba-contracts -e ".[dev]"
 pytest -q
