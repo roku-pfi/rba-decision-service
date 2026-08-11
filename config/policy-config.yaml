@@ -1,0 +1,34 @@
+# Default policy bundle — copied from rba-contracts/examples/policy-config.yaml.
+policy_version: "1.0.0"
+
+defaults:
+  score_to_level:
+    - { max: 0.30, level: LOW }
+    - { max: 0.60, level: MEDIUM }
+    - { max: 0.80, level: HIGH }
+    - { max: 1.00, level: CRITICAL }
+  level_to_action:
+    LOW: ALLOW
+    MEDIUM: REQUIRE_MFA
+    HIGH: REAUTHENTICATE
+    CRITICAL: BLOCK
+  fallback_action: REQUIRE_MFA
+
+applications:
+  demo-banking-app:
+    sensitivity: high
+    score_to_level:
+      - { max: 0.20, level: LOW }
+      - { max: 0.45, level: MEDIUM }
+      - { max: 0.70, level: HIGH }
+      - { max: 1.00, level: CRITICAL }
+    fallback_action: REQUIRE_MFA
+
+  demo-forum-app:
+    sensitivity: low
+    level_to_action:
+      LOW: ALLOW
+      MEDIUM: ALLOW
+      HIGH: REQUIRE_MFA
+      CRITICAL: BLOCK
+    fallback_action: ALLOW

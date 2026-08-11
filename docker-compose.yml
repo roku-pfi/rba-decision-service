@@ -1,0 +1,21 @@
+# Local deps for the request path. Decision-service itself can run via uvicorn
+# in a venv, or build the image from the polyrepo root (see README).
+services:
+  redis:
+    image: redis:7-alpine
+    ports:
+      - "6379:6379"
+
+  postgres:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_USER: rba
+      POSTGRES_PASSWORD: rba
+      POSTGRES_DB: rba_decision
+    ports:
+      - "5432:5432"
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U rba -d rba_decision"]
+      interval: 3s
+      timeout: 3s
+      retries: 10
