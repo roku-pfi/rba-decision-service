@@ -12,6 +12,7 @@ from rba_contracts import (
     FEATURE_SCHEMA_VERSION,
     DecisionMadeEvent,
     FeatureVectorV1,
+    LoginEventSnapshot,
     PolicyConfig,
     RiskEvaluateRequest,
     RiskEvaluateResponse,
@@ -174,6 +175,16 @@ class EvaluateService:
             fallback=response.fallback,
             reasons=response.reasons,
             features=features,
+            login=LoginEventSnapshot(
+                login_timestamp=request.timestamp,
+                ip_address=request.ip_address,
+                asn=request.asn,
+                country=request.country,
+                device_type=request.device_type,
+                os=request.os,
+                browser=request.browser,
+                login_successful=request.login_successful,
+            ),
         )
         with self.session_factory() as session:
             # Re-check idempotency inside the write txn.
