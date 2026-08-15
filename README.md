@@ -39,19 +39,20 @@ and does not rescore.
 
 ```
 src/rba_decision_service/
-├── main.py                 # FastAPI: GET /healthz, POST /risk/evaluate
+├── main.py                 # FastAPI: GET /healthz, POST /risk/evaluate, GET/PUT /policy
 ├── config.py               # pydantic-settings (env / .env)
 ├── scoring/freeman.py      # JSON artifact scorer (no pickle on the hot path)
 ├── profile/store.py        # RedisProfileStore + InMemoryProfileStore
 ├── db/models.py            # decisions + outbox (SQLAlchemy)
 ├── db/session.py
-├── policy/loader.py        # YAML → PolicyConfig
+├── policy/loader.py        # YAML → PolicyConfig (load + dump)
 └── services/
     ├── evaluate.py         # orchestration
     └── reasons.py          # contributions → Reason; burst / low-history
 config/policy-config.yaml   # runtime policy (copied from contracts examples)
 artifacts/freeman-0.1.0.json
 tests/test_evaluate.py
+tests/test_policy.py
 Dockerfile                  # build from polyrepo root (copies sibling libs)
 ```
 
@@ -64,6 +65,9 @@ Use `../rba-infra`. Empty `scripts/` is reserved.
 |---|---|---|
 | `GET` | `/healthz` | `{ "status": "ok" }` |
 | `POST` | `/risk/evaluate` | `RiskEvaluateRequest` → `RiskEvaluateResponse` |
+| `GET` | `/policy` | `PolicyConfig` (IdP-6) |
+| `PUT` | `/policy` | Replace active policy (in-process + YAML persist) |
+| `GET` | `/decisions` | Live decision browser (`DecisionListResponse`) |
 
 Default port **8000**. OpenAPI in `../rba-contracts/openapi/risk-evaluate.yaml`.
 
