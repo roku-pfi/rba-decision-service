@@ -14,6 +14,7 @@ from rba_contracts.evaluate import Reason
 from rba_contracts.enums import RiskLevel
 
 from rba_decision_service.config import Settings, get_settings
+from rba_decision_service.metrics import metrics_response, observe_decision, observe_http
 from sqlalchemy import select
 
 from rba_decision_service.db.models import DecisionRow
@@ -101,10 +102,15 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         version="0.1.0",
         lifespan=lifespan,
     )
+    app.middleware("http")(observe_http)
 
     @app.get("/healthz")
     def healthz() -> dict[str, str]:
         return {"status": "ok"}
+
+    @app.get("/metrics", include_in_schema=False)
+    def metrics():
+        return metrics_response()
 
     @app.get("/policy", response_model=PolicyConfig)
     def get_policy(request: Request) -> PolicyConfig:
@@ -155,12 +161,14 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     ) -> RiskEvaluateResponse:
         service: EvaluateService = request.app.state.evaluate_service
         try:
-            return service.evaluate(body)
+            response = service.evaluate(body)
         except HTTPException:
             raise
         except Exception as exc:  # pragma: no cover
             logger.exception("unhandled evaluate error")
             raise HTTPException(status_code=500, detail=str(exc)) from exc
+        observe_decision(response)
+        return response
 
     return app
 

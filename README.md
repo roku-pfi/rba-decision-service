@@ -39,7 +39,8 @@ and does not rescore.
 
 ```
 src/rba_decision_service/
-├── main.py                 # FastAPI: GET /healthz, POST /risk/evaluate, GET/PUT /policy
+├── main.py                 # FastAPI: /healthz, /metrics, /risk/evaluate, /policy, /decisions
+├── metrics.py              # Prometheus counters/histograms (K8s-2)
 ├── config.py               # pydantic-settings (env / .env)
 ├── scoring/freeman.py      # JSON artifact scorer (no pickle on the hot path)
 ├── profile/store.py        # RedisProfileStore + InMemoryProfileStore
@@ -53,6 +54,8 @@ config/policy-config.yaml   # runtime policy (copied from contracts examples)
 artifacts/freeman-0.1.0.json
 tests/test_evaluate.py
 tests/test_policy.py
+tests/test_decisions.py
+tests/test_metrics.py
 Dockerfile                  # build from polyrepo root (copies sibling libs)
 ```
 
@@ -64,6 +67,7 @@ Use `../rba-infra`. Empty `scripts/` is reserved.
 | Method | Path | Contract |
 |---|---|---|
 | `GET` | `/healthz` | `{ "status": "ok" }` |
+| `GET` | `/metrics` | Prometheus scrape (not in `rba-contracts`) |
 | `POST` | `/risk/evaluate` | `RiskEvaluateRequest` → `RiskEvaluateResponse` |
 | `GET` | `/policy` | `PolicyConfig` (IdP-6) |
 | `PUT` | `/policy` | Replace active policy (in-process + YAML persist) |
@@ -198,4 +202,5 @@ Matches `../rba-contracts/examples/evaluate-request.json`.
 ## Status
 
 Phase 3 thin slice complete (exercised against real Redis/Postgres). Local k8s
-via `../rba-infra` Helm (K8s-1). Roadmap: `../docs/plans/status.md`.
+via `../rba-infra` Helm (K8s-1). `/metrics` + Grafana dashboards are K8s-2.
+Roadmap: `../docs/plans/status.md`.

@@ -18,7 +18,8 @@ status / decisions live in the **`docs`** repo (`../docs`):
 
 ```
 src/rba_decision_service/
-  main.py                 # FastAPI: /risk/evaluate + /policy
+  main.py                 # FastAPI: /risk/evaluate + /policy + /metrics
+  metrics.py              # Prometheus (HTTP latency, decision mix, score)
   config.py               # pydantic-settings
   scoring/freeman.py      # JSON artifact online scorer
   profile/store.py        # Redis + in-memory ProfileStore
@@ -29,6 +30,7 @@ config/policy-config.yaml
 artifacts/freeman-0.1.0.json
 tests/test_evaluate.py
 tests/test_policy.py
+tests/test_metrics.py
 Dockerfile                # build from polyrepo root; k8s via ../rba-infra Helm
 ```
 
