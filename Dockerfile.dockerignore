@@ -1,0 +1,29 @@
+# Shared docker build ignore (polyrepo context = develop/).
+# Copied to each service as Dockerfile.dockerignore; also used by scripts/k3d-up.sh.
+
+**/.git
+**/.venv
+**/venv
+**/__pycache__
+**/*.py[cod]
+**/.pytest_cache
+**/.mypy_cache
+**/.ruff_cache
+**/*.egg-info
+**/node_modules
+**/dist
+**/build
+**/.DS_Store
+**/.env
+**/.cursor
+**/reports
+**/.mlflow
+**/.mplcache
+**/data/raw
+**/data/subset
+**/*.csv
+**/*.parquet
+**/*.pkl
+**/material_sources
+**/.idea
+**/.vscode

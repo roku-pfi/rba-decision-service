@@ -149,6 +149,9 @@ docker build -f rba-decision-service/Dockerfile -t rba-decision-service .
 ```
 
 The Dockerfile copies `rba-features` and `rba-contracts` from sibling dirs.
+Default `PROFILE_WRITE_MODE` in the image is `none` (profile-service writes Redis).
+
+Local cluster: `../rba-infra/scripts/k3d-up.sh` ([ADR-0020](../docs/decisions/0020-local-k8s-k3d-helm.md)).
 
 ## Example
 
@@ -194,5 +197,5 @@ Matches `../rba-contracts/examples/evaluate-request.json`.
 
 ## Status
 
-Phase 3 thin slice complete (exercised against real Redis/Postgres). Remaining:
-local k8s deploy (Phase 0 Helm). Roadmap: `../docs/plans/status.md`.
+Phase 3 thin slice complete (exercised against real Redis/Postgres). Local k8s
+via `../rba-infra` Helm (K8s-1). Roadmap: `../docs/plans/status.md`.

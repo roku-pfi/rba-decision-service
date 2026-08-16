@@ -11,7 +11,7 @@ status / decisions live in the **`docs`** repo (`../docs`):
 
 - **Current status → `../docs/plans/status.md`**
 - Phase rationale → `../docs/plans/development_plan.md` §8 (Phase 3 = this repo)
-- Decisions → `../docs/decisions/` (ADR-0008 contracts; ADR-0009 profile/Freeman online)
+- Decisions → `../docs/decisions/` (ADR-0008 contracts; ADR-0009 profile/Freeman online; ADR-0020 k8s)
 - Narrative → `../docs/devlog.md`
 
 ## Layout
@@ -29,7 +29,7 @@ config/policy-config.yaml
 artifacts/freeman-0.1.0.json
 tests/test_evaluate.py
 tests/test_policy.py
-docker-compose.yml        # REMOVED — shared stack lives in ../rba-infra
+Dockerfile                # build from polyrepo root; k8s via ../rba-infra Helm
 ```
 
 ## Guardrails
