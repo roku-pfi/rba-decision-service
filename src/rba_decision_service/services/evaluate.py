@@ -22,6 +22,7 @@ from rba_contracts.enums import Action, RiskLevel
 from rba_contracts.events import DECISION_MADE_CHANNEL
 from rba_features.features import compute_features, update_profile
 from rba_features.profile import ProfileState
+from rba_features.travel import TravelSignals, compute_travel
 from sqlalchemy.orm import Session, sessionmaker
 
 from rba_decision_service.db.models import DecisionRow, OutboxRow
@@ -32,6 +33,7 @@ from rba_decision_service.services.reasons import (
     maybe_failed_login_burst,
     maybe_low_history,
     reasons_from_contributions,
+    travel_reasons,
 )
 
 logger = logging.getLogger(__name__)
@@ -72,11 +74,13 @@ class EvaluateService:
         feature_schema_version = FEATURE_SCHEMA_VERSION
         reasons = []
         risk_score = self.fallback_risk_score
+        travel: TravelSignals | None = None
 
         try:
             profile = self.profiles.get(request.user_id)
             event = request.to_feature_event()
             features_dict = compute_features(event, profile)
+            travel = compute_travel(event, profile)
 
             if self.scorer is None:
                 raise RuntimeError("scorer not loaded")
@@ -102,6 +106,7 @@ class EvaluateService:
                 request.user_id,
             )
             fallback = True
+            travel = None
             reasons = [
                 {
                     "code": "fallback",
@@ -123,6 +128,14 @@ class EvaluateService:
         reason_models = [
             r if isinstance(r, Reason) else Reason.model_validate(r) for r in reasons
         ]
+        if not fallback and travel is not None:
+            extra = travel_reasons(travel)
+            if extra:
+                reason_models = extra + reason_models
+            if action == Action.ALLOW and (
+                travel.impossible_travel or travel.vpn_or_hosting
+            ):
+                action = Action.REQUIRE_MFA
 
         response = RiskEvaluateResponse(
             event_id=request.event_id,

@@ -37,6 +37,7 @@ Dockerfile                # build from polyrepo root; k8s via ../rba-infra Helm
 ## Guardrails
 
 - Import features **only** from `rba-features` — never re-implement.
+  `impossible_travel` is `compute_travel` (PDP escalate), not FEATURE_NAMES.
 - Import request/response/policy/event models from `rba-contracts`.
 - Do **not** accept `is_attack_ip` on the API.
 - Model stays **inline** in Phase 3 (sidecar is Phase 6).

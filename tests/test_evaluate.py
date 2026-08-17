@@ -70,7 +70,7 @@ def _req(**overrides) -> RiskEvaluateRequest:
         user_id="user-parity-1",
         timestamp=datetime(2020, 6, 1, 12, 0, tzinfo=timezone.utc),
         ip_address="203.0.113.10",
-        asn="13335",
+        asn="7303",
         country="AR",
         device_type="mobile",
         os="Android",
@@ -190,6 +190,101 @@ def test_feature_parity_with_rba_features(service: EvaluateService):
         store.put(uid, profile)
 
     assert online_vecs == offline_vecs
+
+
+def _home_profile(ts: datetime) -> ProfileState:
+    """Familiar AR/7303 history so forum policy can ALLOW before a travel escalate."""
+    epoch = ts.timestamp()
+    ip, asn, country = "203.0.113.10", "7303", "AR"
+    hour = str(ts.hour)
+    counts = {
+        "ip_address": {ip: 20},
+        "asn": {asn: 20},
+        "country": {country: 20},
+        "device_type": {"mobile": 20},
+        "os": {"Android": 20},
+        "browser": {"Chrome": 20},
+        "hour": {hour: 20},
+    }
+    return ProfileState(
+        login_count=20,
+        last_login_ts=epoch,
+        last_login_country=country,
+        last_success_login_ts=epoch,
+        seen_ips={ip},
+        seen_asns={asn},
+        seen_countries={country},
+        seen_device_types={"mobile"},
+        seen_os={"Android"},
+        seen_browsers={"Chrome"},
+        seen_hours={ts.hour},
+        freeman_counts=counts,
+        freeman_totals={k: 20 for k in counts},
+    )
+
+
+def test_impossible_travel_escalates_allow_to_mfa(service: EvaluateService):
+    t0 = datetime(2020, 6, 1, 12, 0, tzinfo=timezone.utc)
+    uid = "user-teleport"
+    service.profiles.put(uid, _home_profile(t0))
+    resp = service.evaluate(
+        _req(
+            user_id=uid,
+            application_id="demo-forum-app",
+            event_id=uuid4(),
+            timestamp=t0 + timedelta(hours=1),
+            country="JP",
+            asn="7303",
+            ip_address="203.0.113.10",
+        )
+    )
+    codes = [r.code for r in resp.reasons]
+    assert "impossible_travel" in codes
+    assert "vpn_or_hosting" not in codes
+    assert resp.action.value == "REQUIRE_MFA"
+    assert resp.fallback is False
+    assert resp.reasons[0].code == "impossible_travel"
+
+
+def test_vpn_skips_teleport_and_escalates(service: EvaluateService):
+    t0 = datetime(2020, 6, 1, 12, 0, tzinfo=timezone.utc)
+    uid = "user-vpn"
+    service.profiles.put(uid, _home_profile(t0))
+    resp = service.evaluate(
+        _req(
+            user_id=uid,
+            application_id="demo-forum-app",
+            event_id=uuid4(),
+            timestamp=t0 + timedelta(hours=1),
+            country="US",
+            asn="13335",
+            ip_address="1.1.1.1",
+        )
+    )
+    codes = [r.code for r in resp.reasons]
+    assert "vpn_or_hosting" in codes
+    assert "impossible_travel" not in codes
+    assert resp.action.value == "REQUIRE_MFA"
+    assert resp.reasons[0].code == "vpn_or_hosting"
+
+
+def test_missing_country_does_not_travel(service: EvaluateService):
+    t0 = datetime(2020, 6, 1, 12, 0, tzinfo=timezone.utc)
+    uid = "user-no-country"
+    service.profiles.put(uid, _home_profile(t0))
+    resp = service.evaluate(
+        _req(
+            user_id=uid,
+            application_id="demo-forum-app",
+            event_id=uuid4(),
+            timestamp=t0 + timedelta(hours=1),
+            country=None,
+            asn="7303",
+        )
+    )
+    codes = [r.code for r in resp.reasons]
+    assert "impossible_travel" not in codes
+    assert "vpn_or_hosting" not in codes
 
 
 def test_freeman_online_matches_ml_training_event_api(scorer: FreemanOnlineScorer):

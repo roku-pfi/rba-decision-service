@@ -7,7 +7,7 @@ caller (`rba-idp`) **enforces**.
 Phase 3 of the thesis: Redis profile read, `rba-features`, Freeman inline,
 policy, explanation, decision + outbox in one Postgres transaction.
 
-Package version: **0.1.0**. Depends on `rba-features` ≥ 0.1.1 and
+Package version: **0.1.0**. Depends on `rba-features` ≥ 0.1.2 and
 `rba-contracts` ≥ 0.1.0 (local editable installs).
 
 > Status: [`../docs/plans/status.md`](../docs/plans/status.md).
@@ -21,9 +21,11 @@ PEP → POST /risk/evaluate
         → idempotent replay if event_id already stored
         → load ProfileState (Redis key rba:profile:{user_id})
         → compute_features (rba-features)   # current event NOT in profile
+        → compute_travel (rba-features)     # country-centroid rule, not Freeman
         → FreemanOnlineScorer (JSON artifact, β=5)
         → reasons from top LLR contributions + soft rules
         → apply_policy (score → level → action)
+        → travel/VPN escalate ALLOW → REQUIRE_MFA (ADR-0022)
         → persist decisions + outbox (one Postgres txn)
         → optional sync profile write (PROFILE_WRITE_MODE=sync)
 ```
