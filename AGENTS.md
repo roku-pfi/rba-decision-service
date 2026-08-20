@@ -27,7 +27,7 @@ src/rba_decision_service/
   policy/loader.py        # YAML load + dump
   services/evaluate.py    # orchestration
 config/policy-config.yaml
-artifacts/freeman-0.1.0.json
+artifacts/freeman-0.2.0.json
 tests/test_evaluate.py
 tests/test_policy.py
 tests/test_metrics.py

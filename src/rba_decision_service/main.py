@@ -22,6 +22,7 @@ from rba_decision_service.db.session import create_tables, make_engine, make_ses
 from rba_decision_service.policy.loader import dump_policy_config, load_policy_config
 from rba_decision_service.profile.store import InMemoryProfileStore, RedisProfileStore
 from rba_decision_service.scoring.freeman import FreemanOnlineScorer
+from rba_decision_service.scoring.logreg import LogRegOnlineScorer
 from rba_decision_service.services.evaluate import EvaluateService
 
 logger = logging.getLogger(__name__)
@@ -84,6 +85,21 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         else:
             logger.warning("Freeman artifact missing at %s — fallback mode only", artifact)
 
+        supervised = None
+        if settings.supervised_escalation_enabled:
+            logreg_artifact = Path(settings.logreg_artifact_path)
+            if logreg_artifact.is_file():
+                supervised = LogRegOnlineScorer.from_path(logreg_artifact)
+                logger.info(
+                    "loaded supervised artifact %s (escalate-only, threshold %.4f)",
+                    logreg_artifact,
+                    supervised.artifact.threshold,
+                )
+            else:
+                logger.warning(
+                    "supervised artifact missing at %s — Freeman only", logreg_artifact
+                )
+
         profiles = _build_profiles(settings)
         app.state.settings = settings
         app.state.policy_config_path = Path(settings.policy_config_path)
@@ -94,6 +110,8 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             session_factory=session_factory,
             profile_write_mode=settings.profile_write_mode,
             failed_login_burst_threshold=settings.failed_login_burst_threshold,
+            failed_login_lockout_threshold=settings.failed_login_lockout_threshold,
+            supervised=supervised,
         )
         yield
 

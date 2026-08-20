@@ -35,11 +35,17 @@ class Settings(BaseSettings):
         default=_REPO_ROOT / "config" / "policy-config.yaml"
     )
     freeman_artifact_path: Path = Field(
-        default=_REPO_ROOT / "artifacts" / "freeman-0.1.0.json"
+        default=_REPO_ROOT / "artifacts" / "freeman-0.2.0.json"
     )
+    # Supervised second opinion (ADR-0027). Missing file → Freeman only.
+    logreg_artifact_path: Path = Field(
+        default=_REPO_ROOT / "artifacts" / "logreg-0.1.0.json"
+    )
+    supervised_escalation_enabled: bool = True
 
-    # Soft rule: failed logins in the last 24h at/above this → extra reason.
+    # Failed logins in the last 24h at/above these → REAUTHENTICATE, then BLOCK.
     failed_login_burst_threshold: int = 3
+    failed_login_lockout_threshold: int = 10
 
 
 @lru_cache

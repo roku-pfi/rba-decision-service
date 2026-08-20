@@ -13,6 +13,11 @@ defaults:
     HIGH: REAUTHENTICATE
     CRITICAL: BLOCK
   fallback_action: REQUIRE_MFA
+  # RF-09 / RNF-08. Flip to true (globally, or per application below) to score,
+  # record and publish every decision while still returning ALLOW to the PEP —
+  # the way to watch the engine on live traffic before it acts on anyone.
+  # Editable at runtime through PUT /policy; no redeploy (RNF-05).
+  monitor_only: false
 
 applications:
   demo-banking-app:

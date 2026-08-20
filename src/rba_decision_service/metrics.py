@@ -24,7 +24,10 @@ HTTP_REQUEST_DURATION = Histogram(
 DECISIONS_TOTAL = Counter(
     "rba_decisions_total",
     "Completed POST /risk/evaluate decisions",
-    labelnames=("action", "risk_level", "fallback"),
+    # `action` is always the engine's verdict, so a monitor-only rollout shows
+    # the real shape of what the policy would do. `enforced` says whether the
+    # PEP was actually told to do it (RF-09).
+    labelnames=("action", "risk_level", "fallback", "enforced"),
 )
 
 RISK_SCORE = Histogram(
@@ -43,10 +46,12 @@ def handler_from_path(path: str) -> str:
 
 
 def observe_decision(response: RiskEvaluateResponse) -> None:
+    monitored = response.monitored_action is not None
     DECISIONS_TOTAL.labels(
-        action=response.action.value,
+        action=(response.monitored_action or response.action).value,
         risk_level=response.risk_level.value,
         fallback=str(response.fallback).lower(),
+        enforced=str(not monitored).lower(),
     ).inc()
     RISK_SCORE.observe(response.risk_score)
 

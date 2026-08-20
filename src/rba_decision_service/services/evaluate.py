@@ -29,10 +29,15 @@ from rba_decision_service.db.models import DecisionRow, OutboxRow
 from rba_decision_service.db.session import get_decision_by_event_id
 from rba_decision_service.profile.store import ProfileStore
 from rba_decision_service.scoring.freeman import FreemanOnlineScorer
+from rba_decision_service.scoring.logreg import LogRegOnlineScorer, SupervisedPrediction
+from rba_decision_service.services.escalate import escalate
 from rba_decision_service.services.reasons import (
-    maybe_failed_login_burst,
+    MONITOR_ONLY_CODE,
+    failed_login_signal,
     maybe_low_history,
+    monitor_only_reason,
     reasons_from_contributions,
+    supervised_reason,
     travel_reasons,
 )
 
@@ -49,6 +54,8 @@ class EvaluateService:
         session_factory: sessionmaker[Session],
         profile_write_mode: str = "sync",
         failed_login_burst_threshold: int = 3,
+        failed_login_lockout_threshold: int = 10,
+        supervised: LogRegOnlineScorer | None = None,
         fallback_risk_score: float = 0.0,
     ) -> None:
         self.profiles = profiles
@@ -57,6 +64,8 @@ class EvaluateService:
         self.session_factory = session_factory
         self.profile_write_mode = profile_write_mode
         self.failed_login_burst_threshold = failed_login_burst_threshold
+        self.failed_login_lockout_threshold = failed_login_lockout_threshold
+        self.supervised = supervised
         self.fallback_risk_score = fallback_risk_score
 
     def evaluate(self, request: RiskEvaluateRequest) -> RiskEvaluateResponse:
@@ -75,6 +84,8 @@ class EvaluateService:
         reasons = []
         risk_score = self.fallback_risk_score
         travel: TravelSignals | None = None
+        failed_login: tuple[Any, Action] | None = None
+        supervised: SupervisedPrediction | None = None
 
         try:
             profile = self.profiles.get(request.user_id)
@@ -90,12 +101,13 @@ class EvaluateService:
             model_version = prediction.model_version
             feature_schema_version = prediction.feature_schema_version
             reasons = reasons_from_contributions(prediction.contributions)
-            burst = maybe_failed_login_burst(
+            failed_login = failed_login_signal(
                 int(features_dict["failed_logins_last_24h"]),
-                self.failed_login_burst_threshold,
+                burst_threshold=self.failed_login_burst_threshold,
+                lockout_threshold=self.failed_login_lockout_threshold,
             )
-            if burst:
-                reasons.insert(0, burst)
+            if self.supervised is not None:
+                supervised = self.supervised.predict(features_dict)
             low = maybe_low_history(int(features_dict["user_login_count"]))
             if low:
                 reasons.append(low)
@@ -128,14 +140,47 @@ class EvaluateService:
         reason_models = [
             r if isinstance(r, Reason) else Reason.model_validate(r) for r in reasons
         ]
-        if not fallback and travel is not None:
-            extra = travel_reasons(travel)
-            if extra:
-                reason_models = extra + reason_models
-            if action == Action.ALLOW and (
-                travel.impossible_travel or travel.vpn_or_hosting
-            ):
-                action = Action.REQUIRE_MFA
+
+        # Rules and the supervised second opinion may only raise the action
+        # (services/escalate). `risk_score` stays Freeman's number either way.
+        if not fallback:
+            rule_reasons: list[Reason] = []
+
+            if failed_login is not None:
+                reason, floor = failed_login
+                rule_reasons.append(reason)
+                action = escalate(action, floor)
+
+            if travel is not None:
+                rule_reasons.extend(travel_reasons(travel))
+                if travel.impossible_travel or travel.vpn_or_hosting:
+                    action = escalate(action, Action.REQUIRE_MFA)
+
+            if supervised is not None and supervised.fired:
+                rule_reasons.append(
+                    supervised_reason(
+                        supervised, target_fpr=self.supervised.artifact.target_fpr
+                    )
+                )
+                action = escalate(action, Action.REQUIRE_MFA)
+
+            reason_models = rule_reasons + reason_models
+
+        # Monitor-only (RF-09 / RNF-08). Everything above already ran: the score,
+        # the rules, the escalation ladder. We record that verdict and hand the
+        # PEP an ALLOW, so an operator can watch the engine on live traffic
+        # before it is allowed to act on anyone.
+        #
+        # This deliberately covers the fallback path too. Monitor mode is an
+        # explicit "do not act on my users yet"; a scorer outage is not a reason
+        # to start acting. RNF-03's fail-to-MFA guarantee still holds where it
+        # means something — at the PEP, when the PDP itself does not answer and
+        # nobody can know whether monitor mode was on (see rba-idp).
+        monitored_action: Action | None = None
+        if self.policy.bundle_for(request.application_id).monitor_only:
+            monitored_action = action
+            action = Action.ALLOW
+            reason_models = [monitor_only_reason(monitored_action), *reason_models]
 
         response = RiskEvaluateResponse(
             event_id=request.event_id,
@@ -148,6 +193,7 @@ class EvaluateService:
             feature_schema_version=feature_schema_version,
             fallback=fallback,
             scored_at=scored_at,
+            monitored_action=monitored_action,
         )
 
         feature_model = (
@@ -174,6 +220,12 @@ class EvaluateService:
         response: RiskEvaluateResponse,
         features: FeatureVectorV1 | None,
     ) -> None:
+        # RF-09 says monitor mode must *record the engine's decision* without
+        # executing it, so the row and the event carry the verdict, not the
+        # ALLOW handed to the PEP. The `monitor_only` reason is what marks it as
+        # unenforced, and `_row_to_response` reads that back on replay.
+        recorded_action = response.monitored_action or response.action
+
         event = DecisionMadeEvent(
             event_id=response.event_id,
             occurred_at=response.scored_at,
@@ -181,7 +233,7 @@ class EvaluateService:
             user_id=request.user_id,
             risk_score=response.risk_score,
             risk_level=response.risk_level,
-            action=response.action,
+            action=recorded_action,
             model_version=response.model_version,
             policy_version=response.policy_version,
             feature_schema_version=response.feature_schema_version,
@@ -211,7 +263,7 @@ class EvaluateService:
                     user_id=request.user_id,
                     risk_score=response.risk_score,
                     risk_level=response.risk_level.value,
-                    action=response.action.value,
+                    action=recorded_action.value,
                     model_version=response.model_version,
                     policy_version=response.policy_version,
                     feature_schema_version=response.feature_schema_version,
@@ -238,15 +290,27 @@ class EvaluateService:
         if scored_at.tzinfo is None:
             scored_at = scored_at.replace(tzinfo=timezone.utc)
 
+        reasons = [Reason.model_validate(r) for r in (row.reasons or [])]
+
+        # A monitored row stores the engine's verdict (see `_persist`). Split it
+        # back into (ALLOW, monitored_action) so a replayed decision enforces
+        # exactly what the live one did.
+        action = Action(row.action)
+        monitored_action: Action | None = None
+        if any(r.code == MONITOR_ONLY_CODE for r in reasons):
+            monitored_action = action
+            action = Action.ALLOW
+
         return RiskEvaluateResponse(
             event_id=row.event_id if isinstance(row.event_id, UUID) else UUID(str(row.event_id)),
             risk_score=row.risk_score,
             risk_level=RiskLevel(row.risk_level),
-            action=Action(row.action),
-            reasons=[Reason.model_validate(r) for r in (row.reasons or [])],
+            action=action,
+            reasons=reasons,
             model_version=row.model_version,
             policy_version=row.policy_version,
             feature_schema_version=row.feature_schema_version,
             fallback=row.fallback,
             scored_at=scored_at,
+            monitored_action=monitored_action,
         )

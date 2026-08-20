@@ -26,6 +26,7 @@ PEP → POST /risk/evaluate
         → reasons from top LLR contributions + soft rules
         → apply_policy (score → level → action)
         → travel/VPN escalate ALLOW → REQUIRE_MFA (ADR-0022)
+        → monitor_only? record the verdict, return ALLOW (ADR-0028)
         → persist decisions + outbox (one Postgres txn)
         → optional sync profile write (PROFILE_WRITE_MODE=sync)
 ```
@@ -53,7 +54,7 @@ src/rba_decision_service/
     ├── evaluate.py         # orchestration
     └── reasons.py          # contributions → Reason; burst / low-history
 config/policy-config.yaml   # runtime policy (copied from contracts examples)
-artifacts/freeman-0.1.0.json
+artifacts/freeman-0.2.0.json
 tests/test_evaluate.py
 tests/test_policy.py
 tests/test_decisions.py
@@ -87,11 +88,30 @@ From Freeman per-signal LLRs (top 5 by absolute contribution):
 | `signal_familiar` | contribution < −0.05 |
 | `signal_neutral` | otherwise |
 
-Soft rules (not the model):
+Rules and the second opinion (not the primary model). Each names an **action
+floor**; `services/escalate.py` takes the most severe. Nothing can lower an
+action, and nothing rewrites `risk_score` — that is always Freeman's number
+(ADR-0004 / [ADR-0027](../docs/decisions/0027-supervised-second-opinion-and-failed-logins.md)).
 
-- `failed_login_burst` — `failed_logins_last_24h` ≥ `FAILED_LOGIN_BURST_THRESHOLD` (default 3)
-- `low_history` — `user_login_count` < 3
-- `fallback` — scorer/profile failed
+| Code | When | Action floor |
+|---|---|---|
+| `failed_login_lockout` | `failed_logins_last_24h` ≥ `FAILED_LOGIN_LOCKOUT_THRESHOLD` (10) | `BLOCK` |
+| `failed_login_burst` | `failed_logins_last_24h` ≥ `FAILED_LOGIN_BURST_THRESHOLD` (3) | `REAUTHENTICATE` |
+| `impossible_travel` / `vpn_or_hosting` | travel rule (ADR-0022) | `REQUIRE_MFA` |
+| `supervised_second_opinion` | LogReg above its baked 1%-FPR threshold | `REQUIRE_MFA` |
+| `low_history` | `user_login_count` < 3 | — (reason only) |
+| `fallback` | scorer/profile failed | policy `fallback_action` |
+| `monitor_only` | policy `monitor_only` is on | forces `ALLOW`; the verdict moves to `monitored_action` |
+
+### Supervised second opinion
+
+`artifacts/logreg-0.1.0.json` (1.5 KB) carries mean/scale/coef/intercept over the
+same `FEATURE_NAMES` plus the **operating point calibrated offline** — serving
+never re-derives the threshold. Scoring is one dot product in-process: no
+sklearn, no pickle, no extra container, no network hop. It catches what Freeman
+structurally cannot (novel network + ordinary device); Freeman keeps producing
+the score and the reason trace. Set `SUPERVISED_ESCALATION_ENABLED=false`, or
+remove the artifact, to run Freeman alone.
 
 ### Policy (runtime copy)
 
@@ -99,6 +119,27 @@ Soft rules (not the model):
 LOW ≤ 0.30 `ALLOW`, MEDIUM ≤ 0.60 `REQUIRE_MFA`, HIGH ≤ 0.80 `REAUTHENTICATE`,
 CRITICAL `BLOCK`. `demo-banking-app` uses tighter bands. Fallback action:
 `REQUIRE_MFA`.
+
+### Monitor-only mode (RF-09 / RNF-08, ADR-0028)
+
+`monitor_only: true` on the default bundle or on one application. The full
+pipeline still runs — score, rules, escalation, persistence, outbox — and the
+response becomes `action: ALLOW` with the engine's verdict in
+`monitored_action` and a `monitor_only` reason at the head of the list.
+
+The stored row and the published event carry the **verdict**, not the ALLOW:
+RF-09 asks to record what the engine decided, and the `monitor_only` reason is
+what marks it unenforced (also what an idempotent replay reads back). Metrics
+follow the same rule — `rba_decisions_total` counts the verdict and carries an
+`enforced` label.
+
+It also suppresses `fallback_action`: a scorer outage is not a reason to start
+acting on a tenant you are only watching. The fail-to-MFA guarantee lives at the
+PEP instead (`rba-idp`, `PDP_UNAVAILABLE_ACTION`), where the PDP's silence makes
+monitor mode unknowable.
+
+Toggle it through `PUT /policy` — no redeploy (RNF-05). **Off by default; a
+bundle left on enforces nothing.**
 
 ### Postgres tables (DB `rba_decision`)
 
@@ -138,7 +179,7 @@ JSON only on the hot path (no pickle). Export from `rba-ml-training/`:
 ```bash
 python -m ml.export_freeman \
   --pickle artifacts/step5/freeman.pkl \
-  --out ../rba-decision-service/artifacts/freeman-0.1.0.json \
+  --out ../rba-decision-service/artifacts/freeman-0.2.0.json \
   --beta 5.0
 ```
 
@@ -188,9 +229,12 @@ Matches `../rba-contracts/examples/evaluate-request.json`.
 | `DATABASE_URL` | `postgresql+psycopg://rba:rba@localhost:5432/rba_decision` | created by `rba-infra` init |
 | `USE_MEMORY_DB` | `false` | sqlite StaticPool for tests |
 | `POLICY_CONFIG_PATH` | `config/policy-config.yaml` | |
-| `FREEMAN_ARTIFACT_PATH` | `artifacts/freeman-0.1.0.json` | |
+| `FREEMAN_ARTIFACT_PATH` | `artifacts/freeman-0.2.0.json` | primary score + reasons |
+| `LOGREG_ARTIFACT_PATH` | `artifacts/logreg-0.1.0.json` | second opinion; missing → Freeman only |
+| `SUPERVISED_ESCALATION_ENABLED` | `true` | `false` → Freeman only |
 | `PROFILE_WRITE_MODE` | `sync` | `none` when profile-service owns writes |
-| `FAILED_LOGIN_BURST_THRESHOLD` | `3` | extra reason, not a hard block |
+| `FAILED_LOGIN_BURST_THRESHOLD` | `3` | floor `REAUTHENTICATE` |
+| `FAILED_LOGIN_LOCKOUT_THRESHOLD` | `10` | floor `BLOCK` |
 | `HOST` / `PORT` | `0.0.0.0` / `8000` | |
 
 ## Guardrails

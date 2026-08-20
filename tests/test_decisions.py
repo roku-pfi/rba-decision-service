@@ -13,7 +13,7 @@ from rba_decision_service.config import Settings
 from rba_decision_service.main import create_app
 
 ROOT = Path(__file__).resolve().parents[1]
-ARTIFACT = ROOT / "artifacts" / "freeman-0.1.0.json"
+ARTIFACT = ROOT / "artifacts" / "freeman-0.2.0.json"
 POLICY = ROOT / "config" / "policy-config.yaml"
 
 

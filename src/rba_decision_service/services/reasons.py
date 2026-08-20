@@ -1,7 +1,14 @@
-"""Map model contributions + soft rules → PDP Reason list."""
+"""Map model contributions + rules → PDP Reasons (and the action floor a rule demands).
+
+A rule that can change the outcome returns both halves here — the human-readable
+Reason and the ``Action`` floor it justifies — so a threshold is compared in
+exactly one place. ``EvaluateService`` applies the floor via
+``services.escalate.escalate``; it never lowers an action.
+"""
 
 from __future__ import annotations
 
+from rba_contracts.enums import Action
 from rba_contracts.evaluate import Reason
 from rba_contracts.model import SignalContribution
 from rba_features.travel import SPEED_KMH_THRESHOLD, TravelSignals
@@ -34,15 +41,72 @@ def reasons_from_contributions(
     return out
 
 
-def maybe_failed_login_burst(failed_24h: int, threshold: int) -> Reason | None:
-    if failed_24h >= threshold:
-        return Reason(
-            code="failed_login_burst",
-            signal="failed_logins_last_24h",
-            contribution=float(failed_24h),
-            detail=f"{failed_24h} failed logins in the last 24h (threshold {threshold})",
+def failed_login_signal(
+    failed_24h: int,
+    *,
+    burst_threshold: int,
+    lockout_threshold: int,
+) -> tuple[Reason, Action] | None:
+    """Repeated failures on this account → (reason, action floor). None below burst.
+
+    Two bands (ADR-0027). A *burst* is the credential-stuffing signature: enough
+    wrong passwords that a password alone should no longer be sufficient, so the
+    floor is ``REAUTHENTICATE``. A *lockout* is a sustained run against one
+    account, where the honest answer is to stop serving it — floor ``BLOCK``.
+
+    Freeman cannot see this: it models what is normal for a user, and a failed
+    attempt from the attacker's device looks like an ordinary novel login.
+    """
+    if failed_24h >= lockout_threshold:
+        return (
+            Reason(
+                code="failed_login_lockout",
+                signal="failed_logins_last_24h",
+                contribution=float(failed_24h),
+                detail=(
+                    f"{failed_24h} failed logins in the last 24h "
+                    f"(lockout threshold {lockout_threshold})"
+                ),
+            ),
+            Action.BLOCK,
+        )
+    if failed_24h >= burst_threshold:
+        return (
+            Reason(
+                code="failed_login_burst",
+                signal="failed_logins_last_24h",
+                contribution=float(failed_24h),
+                detail=(
+                    f"{failed_24h} failed logins in the last 24h "
+                    f"(burst threshold {burst_threshold})"
+                ),
+            ),
+            Action.REAUTHENTICATE,
         )
     return None
+
+
+def supervised_reason(
+    prediction, *, target_fpr: float, top_signal: str | None = None
+) -> Reason:
+    """Why the supervised model escalated (ADR-0027).
+
+    Names the operating point, not the raw probability: "above the threshold we
+    calibrated to challenge 1% of legitimate logins" is auditable, whereas a
+    bare 0.81 invites comparison with Freeman's differently-scaled score.
+    """
+    driver = top_signal or (
+        prediction.contributions[0].signal if prediction.contributions else "features"
+    )
+    return Reason(
+        code="supervised_second_opinion",
+        signal=driver,
+        contribution=float(prediction.risk_score),
+        detail=(
+            f"supervised model {prediction.model_version} scored this login above its "
+            f"{target_fpr:.0%}-FPR threshold; strongest signal: {driver}"
+        ),
+    )
 
 
 def maybe_low_history(login_count: int, threshold: int = 3) -> Reason | None:
@@ -89,3 +153,23 @@ def travel_reasons(signals: TravelSignals) -> list[Reason]:
             )
         ]
     return []
+
+
+MONITOR_ONLY_CODE = "monitor_only"
+
+
+def monitor_only_reason(decided: Action) -> Reason:
+    """Mark a decision that was recorded but not enforced (RF-09 / RNF-08).
+
+    This reason is also the marker ``EvaluateService._row_to_response`` reads on
+    idempotent replay, so a stored row is enough to reconstruct both halves of a
+    monitored decision: the engine said ``decided``, the PEP was told ALLOW.
+    """
+    return Reason(
+        code=MONITOR_ONLY_CODE,
+        signal="policy",
+        detail=(
+            f"monitor-only mode: engine decided {decided.value}; "
+            "returned ALLOW without enforcing it"
+        ),
+    )

@@ -12,7 +12,7 @@ from rba_decision_service.config import Settings
 from rba_decision_service.main import create_app
 
 ROOT = Path(__file__).resolve().parents[1]
-ARTIFACT = ROOT / "artifacts" / "freeman-0.1.0.json"
+ARTIFACT = ROOT / "artifacts" / "freeman-0.2.0.json"
 POLICY = ROOT / "config" / "policy-config.yaml"
 
 
@@ -58,6 +58,9 @@ def test_metrics_empty_then_decision_counters() -> None:
 
         scrape = client.get("/metrics")
         text = scrape.text
-        assert f'rba_decisions_total{{action="{action}",fallback="false",risk_level="{level}"}}' in text
+        assert (
+            f'rba_decisions_total{{action="{action}",enforced="true",'
+            f'fallback="false",risk_level="{level}"}}' in text
+        )
         assert "rba_risk_score_bucket" in text
         assert 'handler="/risk/evaluate"' in text

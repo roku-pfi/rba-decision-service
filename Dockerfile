@@ -6,7 +6,8 @@ ENV PYTHONDONTWRITEBYTECODE=1 \
     PYTHONUNBUFFERED=1 \
     PIP_DISABLE_PIP_VERSION_CHECK=1 \
     POLICY_CONFIG_PATH=/app/config/policy-config.yaml \
-    FREEMAN_ARTIFACT_PATH=/app/artifacts/freeman-0.1.0.json \
+    FREEMAN_ARTIFACT_PATH=/app/artifacts/freeman-0.2.0.json \
+    LOGREG_ARTIFACT_PATH=/app/artifacts/logreg-0.1.0.json \
     PROFILE_WRITE_MODE=none
 
 WORKDIR /app
