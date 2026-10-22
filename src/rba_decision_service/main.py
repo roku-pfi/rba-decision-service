@@ -18,6 +18,7 @@ from rba_contracts import (
     TenantPolicy,
 )
 from rba_contracts.evaluate import Reason
+from rba_contracts.events import LoginEventSnapshot
 from rba_contracts.features import FeatureVectorV1
 from rba_contracts.enums import EngineMode, RiskLevel
 
@@ -60,6 +61,7 @@ def _row_to_record(row: DecisionRow) -> DecisionRecord:
         feature_schema_version=row.feature_schema_version,
         fallback=row.fallback,
         features=FeatureVectorV1.model_validate(row.features) if row.features else None,
+        login=LoginEventSnapshot.model_validate(row.login) if row.login else None,
     )
 
 

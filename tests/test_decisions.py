@@ -70,6 +70,10 @@ def test_list_decisions_after_evaluate() -> None:
         assert item["tenant_id"] == "roku-bank"
         assert item["enforced_action"] == scored.json()["enforced_action"]
         assert item["engine_mode"] == "MONITOR"
+        # What the console shows beside the verdict (contracts 0.13.0).
+        assert item["login"]["ip_address"] == req.ip_address
+        assert item["login"]["country"] == req.country
+        assert item["features"] is not None
         got = client.get(f"/decisions/{req.event_id}", params=BANK)
         assert got.status_code == 200
         assert got.json()["risk_score"] == scored.json()["risk_score"]

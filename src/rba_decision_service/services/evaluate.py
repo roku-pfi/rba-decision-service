@@ -220,6 +220,16 @@ class EvaluateService:
         response: RiskEvaluateResponse,
         features: FeatureVectorV1 | None,
     ) -> None:
+        snapshot = LoginEventSnapshot(
+            login_timestamp=request.timestamp,
+            ip_address=request.ip_address,
+            asn=request.asn,
+            country=request.country,
+            device_type=request.device_type,
+            os=request.os,
+            browser=request.browser,
+            login_successful=request.login_successful,
+        )
         event = DecisionMadeEvent(
             event_id=response.event_id,
             occurred_at=response.scored_at,
@@ -238,16 +248,7 @@ class EvaluateService:
             fallback=response.fallback,
             reasons=response.reasons,
             features=features,
-            login=LoginEventSnapshot(
-                login_timestamp=request.timestamp,
-                ip_address=request.ip_address,
-                asn=request.asn,
-                country=request.country,
-                device_type=request.device_type,
-                os=request.os,
-                browser=request.browser,
-                login_successful=request.login_successful,
-            ),
+            login=snapshot,
         )
         with self.session_factory() as session:
             # Re-check idempotency inside the write txn.
@@ -272,6 +273,7 @@ class EvaluateService:
                     fallback=response.fallback,
                     reasons=[r.model_dump() for r in response.reasons],
                     features=features.model_dump() if features else None,
+                    login=snapshot.model_dump(mode="json"),
                     scored_at=response.scored_at,
                 )
             )

@@ -5,7 +5,7 @@ from __future__ import annotations
 from collections.abc import Iterator
 from contextlib import contextmanager
 
-from sqlalchemy import create_engine, select
+from sqlalchemy import create_engine, inspect, select, text
 from sqlalchemy.engine import Engine
 from sqlalchemy.orm import Session, sessionmaker
 
@@ -21,6 +21,27 @@ def make_engine(url: str, *, echo: bool = False) -> Engine:
 
 def create_tables(engine: Engine) -> None:
     Base.metadata.create_all(engine)
+    _add_nullable_columns(engine)
+
+
+def _add_nullable_columns(engine: Engine) -> None:
+    """Add new nullable columns to tables that already exist.
+
+    The one schema change create_all cannot make and a kept database (k3d)
+    still needs; anything else is still "reset the database".
+    """
+    inspector = inspect(engine)
+    existing = set(inspector.get_table_names())
+    with engine.begin() as conn:
+        for table in Base.metadata.sorted_tables:
+            if table.name not in existing:
+                continue
+            have = {c["name"] for c in inspector.get_columns(table.name)}
+            for column in table.columns:
+                if column.name in have or not column.nullable:
+                    continue
+                kind = column.type.compile(dialect=engine.dialect)
+                conn.execute(text(f'ALTER TABLE "{table.name}" ADD COLUMN "{column.name}" {kind}'))
 
 
 def make_session_factory(engine: Engine) -> sessionmaker[Session]:
