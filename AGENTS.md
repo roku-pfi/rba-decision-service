@@ -1,7 +1,7 @@
 # AGENTS.md — rba-decision-service
 
 Synchronous **decision / PDP** service for a risk-based authentication (RBA)
-thesis project. Implements `POST /risk/evaluate` and `GET`/`PUT /policy` against frozen contracts.
+thesis project. Implements `POST /risk/evaluate` and `GET`/`PUT /tenants/{tenant_id}/policy` against `rba-contracts`.
 Portable orientation for any AI coding tool.
 
 ## Where we are / where things are stated
@@ -18,15 +18,15 @@ status / decisions live in the **`docs`** repo (`../docs`):
 
 ```
 src/rba_decision_service/
-  main.py                 # FastAPI: /risk/evaluate + /policy + /metrics
+  main.py                 # FastAPI: /risk/evaluate + /tenants/{id}/policy + /decisions + /metrics
   metrics.py              # Prometheus (HTTP latency, decision mix, score)
   config.py               # pydantic-settings
   scoring/freeman.py      # JSON artifact online scorer
   profile/store.py        # Redis + in-memory ProfileStore
   db/                     # decisions + outbox (SQLAlchemy)
-  policy/loader.py        # YAML load + dump
+  policy/store.py         # tenant policies in Postgres + TTL cache + seed
   services/evaluate.py    # orchestration
-config/policy-config.yaml
+config/policies/*.yaml
 artifacts/freeman-0.2.0.json
 tests/test_evaluate.py
 tests/test_policy.py

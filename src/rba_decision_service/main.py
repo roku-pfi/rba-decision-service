@@ -9,9 +9,16 @@ from pathlib import Path
 from uuid import UUID
 
 from fastapi import FastAPI, HTTPException, Query, Request
-from rba_contracts import Action, DecisionListResponse, DecisionRecord, PolicyConfig, RiskEvaluateRequest, RiskEvaluateResponse
+from rba_contracts import (
+    Action,
+    DecisionListResponse,
+    DecisionRecord,
+    RiskEvaluateRequest,
+    RiskEvaluateResponse,
+    TenantPolicy,
+)
 from rba_contracts.evaluate import Reason
-from rba_contracts.enums import RiskLevel
+from rba_contracts.enums import EngineMode, RiskLevel
 
 from rba_decision_service.config import Settings, get_settings
 from rba_decision_service.metrics import metrics_response, observe_decision, observe_http
@@ -19,11 +26,11 @@ from sqlalchemy import select
 
 from rba_decision_service.db.models import DecisionRow
 from rba_decision_service.db.session import create_tables, make_engine, make_session_factory
-from rba_decision_service.policy.loader import dump_policy_config, load_policy_config
+from rba_decision_service.policy.store import DbPolicyStore, load_policy_dir
 from rba_decision_service.profile.store import InMemoryProfileStore, RedisProfileStore
 from rba_decision_service.scoring.freeman import FreemanOnlineScorer
 from rba_decision_service.scoring.logreg import LogRegOnlineScorer
-from rba_decision_service.services.evaluate import EvaluateService
+from rba_decision_service.services.evaluate import EvaluateService, UnknownTenant
 
 logger = logging.getLogger(__name__)
 
@@ -36,11 +43,15 @@ def _row_to_record(row: DecisionRow) -> DecisionRecord:
     return DecisionRecord(
         event_id=event_id,
         occurred_at=scored_at,
+        tenant_id=row.tenant_id,
         application_id=row.application_id,
         user_id=row.user_id,
         risk_score=row.risk_score,
         risk_level=RiskLevel(row.risk_level),
         action=Action(row.action),
+        enforced_action=Action(row.enforced_action),
+        engine_mode=EngineMode(row.engine_mode),
+        simulated=row.simulated,
         reasons=[Reason.model_validate(item) for item in (row.reasons or [])],
         model_version=row.model_version,
         policy_version=row.policy_version,
@@ -76,7 +87,10 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         create_tables(engine)
         session_factory = make_session_factory(engine)
 
-        policy = load_policy_config(Path(settings.policy_config_path))
+        policies = DbPolicyStore(session_factory, ttl_seconds=settings.policy_cache_seconds)
+        seeded = policies.seed(load_policy_dir(settings.policy_seed_dir))
+        if seeded:
+            logger.info("seeded tenant policies: %s", ", ".join(seeded))
         scorer = None
         artifact = Path(settings.freeman_artifact_path)
         if artifact.is_file():
@@ -102,11 +116,10 @@ def create_app(settings: Settings | None = None) -> FastAPI:
 
         profiles = _build_profiles(settings)
         app.state.settings = settings
-        app.state.policy_config_path = Path(settings.policy_config_path)
         app.state.evaluate_service = EvaluateService(
             profiles=profiles,
             scorer=scorer,
-            policy=policy,
+            policies=policies,
             session_factory=session_factory,
             profile_write_mode=settings.profile_write_mode,
             failed_login_burst_threshold=settings.failed_login_burst_threshold,
@@ -130,28 +143,37 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     def metrics():
         return metrics_response()
 
-    @app.get("/policy", response_model=PolicyConfig)
-    def get_policy(request: Request) -> PolicyConfig:
+    @app.get("/tenants/{tenant_id}/policy", response_model=TenantPolicy)
+    def get_policy(tenant_id: str, request: Request) -> TenantPolicy:
         service: EvaluateService = request.app.state.evaluate_service
-        return service.policy
+        policy = service.policies.get(tenant_id)
+        if policy is None:
+            raise HTTPException(status_code=404, detail="no policy for this tenant")
+        return policy
 
-    @app.put("/policy", response_model=PolicyConfig)
-    def put_policy(body: PolicyConfig, request: Request) -> PolicyConfig:
+    @app.put("/tenants/{tenant_id}/policy", response_model=TenantPolicy)
+    def put_policy(tenant_id: str, body: TenantPolicy, request: Request) -> TenantPolicy:
+        if body.tenant_id != tenant_id:
+            raise HTTPException(status_code=422, detail="tenant_id in body differs from path")
         service: EvaluateService = request.app.state.evaluate_service
-        service.policy = body
-        dump_policy_config(request.app.state.policy_config_path, body)
-        return body
+        return service.policies.put(body)
 
     @app.get("/decisions", response_model=DecisionListResponse)
     def list_decisions(
         request: Request,
+        tenant_id: str,
         user_id: str | None = None,
         application_id: str | None = None,
         action: Action | None = None,
         limit: int = Query(default=50, ge=1, le=200),
     ) -> DecisionListResponse:
         service: EvaluateService = request.app.state.evaluate_service
-        stmt = select(DecisionRow).order_by(DecisionRow.scored_at.desc())
+        # ADR-0033: a decision read is always scoped to one tenant.
+        stmt = (
+            select(DecisionRow)
+            .where(DecisionRow.tenant_id == tenant_id)
+            .order_by(DecisionRow.scored_at.desc())
+        )
         if user_id:
             stmt = stmt.where(DecisionRow.user_id == user_id)
         if application_id:
@@ -165,11 +187,12 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         return DecisionListResponse(items=items, count=len(items))
 
     @app.get("/decisions/{event_id}", response_model=DecisionRecord)
-    def get_decision(event_id: UUID, request: Request) -> DecisionRecord:
+    def get_decision(event_id: UUID, tenant_id: str, request: Request) -> DecisionRecord:
         service: EvaluateService = request.app.state.evaluate_service
         with service.session_factory() as session:
             row = session.get(DecisionRow, event_id)
-        if row is None:
+        # Another tenant's event is indistinguishable from a missing one.
+        if row is None or row.tenant_id != tenant_id:
             raise HTTPException(status_code=404, detail="unknown event")
         return _row_to_record(row)
 
@@ -180,12 +203,14 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         service: EvaluateService = request.app.state.evaluate_service
         try:
             response = service.evaluate(body)
+        except UnknownTenant:
+            raise HTTPException(status_code=404, detail="no policy for this tenant") from None
         except HTTPException:
             raise
         except Exception as exc:  # pragma: no cover
             logger.exception("unhandled evaluate error")
             raise HTTPException(status_code=500, detail=str(exc)) from exc
-        observe_decision(response)
+        observe_decision(body.tenant_id, response)
         return response
 
     return app

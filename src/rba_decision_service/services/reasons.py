@@ -153,23 +153,3 @@ def travel_reasons(signals: TravelSignals) -> list[Reason]:
             )
         ]
     return []
-
-
-MONITOR_ONLY_CODE = "monitor_only"
-
-
-def monitor_only_reason(decided: Action) -> Reason:
-    """Mark a decision that was recorded but not enforced (RF-09 / RNF-08).
-
-    This reason is also the marker ``EvaluateService._row_to_response`` reads on
-    idempotent replay, so a stored row is enough to reconstruct both halves of a
-    monitored decision: the engine said ``decided``, the PEP was told ALLOW.
-    """
-    return Reason(
-        code=MONITOR_ONLY_CODE,
-        signal="policy",
-        detail=(
-            f"monitor-only mode: engine decided {decided.value}; "
-            "returned ALLOW without enforcing it"
-        ),
-    )

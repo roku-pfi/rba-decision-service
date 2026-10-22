@@ -1,0 +1,17 @@
+# Kaze Labs (a software company's internal portal). Adaptive from day one: a
+# usual login is password only, anything unusual gets the passkey.
+tenant_id: kaze-labs
+policy_version: "2.0.0"
+base_policy: PASSWORD_ONLY
+engine_mode: ACTIVE
+score_to_level:
+  - { max: 0.25, level: LOW }
+  - { max: 0.50, level: MEDIUM }
+  - { max: 0.75, level: HIGH }
+  - { max: 1.00, level: CRITICAL }
+level_to_action:
+  LOW: ALLOW
+  MEDIUM: REQUIRE_MFA
+  HIGH: REAUTHENTICATE
+  CRITICAL: BLOCK
+fallback_action: REQUIRE_MFA

@@ -1,0 +1,20 @@
+# Roku Bank (consumer banking). Starts the way a bank already works — a passkey on
+# every login — with the engine watching (ADR-0034). The operator reads the
+# "prompts the engine would have saved" figure, then switches engine_mode to ACTIVE.
+tenant_id: roku-bank
+policy_version: "2.0.0"
+base_policy: ALWAYS_MFA
+engine_mode: MONITOR
+# High-sensitivity bands (were the demo-banking-app override in policy 1.0.0).
+score_to_level:
+  - { max: 0.20, level: LOW }
+  - { max: 0.45, level: MEDIUM }
+  - { max: 0.70, level: HIGH }
+  - { max: 1.00, level: CRITICAL }
+level_to_action:
+  LOW: ALLOW
+  MEDIUM: REQUIRE_MFA
+  HIGH: REAUTHENTICATE
+  CRITICAL: BLOCK
+# Prefer a challenge over a silent allow when the scorer or profile store fails.
+fallback_action: REQUIRE_MFA

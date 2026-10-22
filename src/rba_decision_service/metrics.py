@@ -24,10 +24,8 @@ HTTP_REQUEST_DURATION = Histogram(
 DECISIONS_TOTAL = Counter(
     "rba_decisions_total",
     "Completed POST /risk/evaluate decisions",
-    # `action` is always the engine's verdict, so a monitor-only rollout shows
-    # the real shape of what the policy would do. `enforced` says whether the
-    # PEP was actually told to do it (RF-09).
-    labelnames=("action", "risk_level", "fallback", "enforced"),
+    # `action` is the engine's verdict; `enforced_action` what the PEP applied.
+    labelnames=("tenant", "action", "enforced_action", "engine_mode", "risk_level", "fallback"),
 )
 
 RISK_SCORE = Histogram(
@@ -45,13 +43,18 @@ def handler_from_path(path: str) -> str:
     return path
 
 
-def observe_decision(response: RiskEvaluateResponse) -> None:
-    monitored = response.monitored_action is not None
+def observe_decision(tenant_id: str, response: RiskEvaluateResponse) -> None:
+    # `action` is the engine's verdict, `enforced_action` what the PEP applied:
+    # under MONITOR the series show what the policy *would* do next to what it
+    # did. Tenant is a label (a handful of values); user and score are not
+    # (RF-18: per-attempt detail stays in the decision record).
     DECISIONS_TOTAL.labels(
-        action=(response.monitored_action or response.action).value,
+        tenant=tenant_id,
+        action=response.action.value,
+        enforced_action=response.enforced_action.value,
+        engine_mode=response.engine_mode.value,
         risk_level=response.risk_level.value,
         fallback=str(response.fallback).lower(),
-        enforced=str(not monitored).lower(),
     ).inc()
     RISK_SCORE.observe(response.risk_score)
 

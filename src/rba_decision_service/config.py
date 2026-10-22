@@ -31,9 +31,13 @@ class Settings(BaseSettings):
     # When true, use in-memory SQLite (unit tests / no Docker).
     use_memory_db: bool = False
 
-    policy_config_path: Path = Field(
-        default=_REPO_ROOT / "config" / "policy-config.yaml"
-    )
+    # Tenant policies live in Postgres (ADR-0033). On startup, any tenant
+    # without a row is seeded from this directory; existing rows are never
+    # overwritten, so an operator's edit survives a restart.
+    policy_seed_dir: Path = Field(default=_REPO_ROOT / "config" / "policies")
+    # How stale a replica's copy of a policy may be after another replica
+    # writes it.
+    policy_cache_seconds: float = 5.0
     freeman_artifact_path: Path = Field(
         default=_REPO_ROOT / "artifacts" / "freeman-0.2.0.json"
     )

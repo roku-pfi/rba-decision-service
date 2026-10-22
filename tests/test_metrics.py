@@ -13,7 +13,6 @@ from rba_decision_service.main import create_app
 
 ROOT = Path(__file__).resolve().parents[1]
 ARTIFACT = ROOT / "artifacts" / "freeman-0.2.0.json"
-POLICY = ROOT / "config" / "policy-config.yaml"
 
 
 def test_metrics_empty_then_decision_counters() -> None:
@@ -24,7 +23,6 @@ def test_metrics_empty_then_decision_counters() -> None:
     settings = Settings(
         use_memory_db=True,
         redis_url="memory://",
-        policy_config_path=POLICY,
         freeman_artifact_path=ARTIFACT,
         profile_write_mode="sync",
     )
@@ -40,7 +38,8 @@ def test_metrics_empty_then_decision_counters() -> None:
 
         payload = {
             "event_id": str(uuid4()),
-            "application_id": "demo-banking-app",
+            "tenant_id": "roku-bank",
+            "application_id": "roku-bank-web",
             "user_id": "metrics-user",
             "timestamp": datetime(2020, 6, 1, 12, 0, tzinfo=timezone.utc).isoformat(),
             "ip_address": "203.0.113.10",
@@ -54,13 +53,15 @@ def test_metrics_empty_then_decision_counters() -> None:
         resp = client.post("/risk/evaluate", json=payload)
         assert resp.status_code == 200, resp.text
         action = resp.json()["action"]
+        enforced = resp.json()["enforced_action"]
         level = resp.json()["risk_level"]
 
         scrape = client.get("/metrics")
         text = scrape.text
         assert (
-            f'rba_decisions_total{{action="{action}",enforced="true",'
-            f'fallback="false",risk_level="{level}"}}' in text
+            f'rba_decisions_total{{action="{action}",enforced_action="{enforced}",'
+            f'engine_mode="MONITOR",fallback="false",risk_level="{level}",'
+            f'tenant="roku-bank"}}' in text
         )
         assert "rba_risk_score_bucket" in text
         assert 'handler="/risk/evaluate"' in text

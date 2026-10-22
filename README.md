@@ -17,8 +17,9 @@ Package version: **0.1.0**. Depends on `rba-features` ≥ 0.1.2 and
 ## Request path
 
 ```
-PEP → POST /risk/evaluate
+PEP → POST /risk/evaluate   (tenant_id names the tenant, ADR-0033)
         → idempotent replay if event_id already stored
+        → load the tenant's policy (Postgres, cached ~5 s per replica)
         → load ProfileState (Redis key rba:profile:{user_id})
         → compute_features (rba-features)   # current event NOT in profile
         → compute_travel (rba-features)     # country-centroid rule, not Freeman
@@ -26,7 +27,7 @@ PEP → POST /risk/evaluate
         → reasons from top LLR contributions + soft rules
         → apply_policy (score → level → action)
         → travel/VPN escalate ALLOW → REQUIRE_MFA (ADR-0022)
-        → monitor_only? record the verdict, return ALLOW (ADR-0028)
+        → enforced_action: the verdict (ACTIVE) or the base policy (MONITOR) (ADR-0034)
         → persist decisions + outbox (one Postgres txn)
         → optional sync profile write (PROFILE_WRITE_MODE=sync)
 ```
@@ -42,18 +43,18 @@ and does not rescore.
 
 ```
 src/rba_decision_service/
-├── main.py                 # FastAPI: /healthz, /metrics, /risk/evaluate, /policy, /decisions
+├── main.py                 # FastAPI: /healthz, /metrics, /risk/evaluate, /tenants/{id}/policy, /decisions
 ├── metrics.py              # Prometheus counters/histograms (K8s-2)
 ├── config.py               # pydantic-settings (env / .env)
 ├── scoring/freeman.py      # JSON artifact scorer (no pickle on the hot path)
 ├── profile/store.py        # RedisProfileStore + InMemoryProfileStore
-├── db/models.py            # decisions + outbox (SQLAlchemy)
+├── db/models.py            # decisions + outbox + tenant_policies (SQLAlchemy)
 ├── db/session.py
-├── policy/loader.py        # YAML → PolicyConfig (load + dump)
+├── policy/store.py         # tenant policies in Postgres, per-replica TTL cache, seeding
 └── services/
     ├── evaluate.py         # orchestration
     └── reasons.py          # contributions → Reason; burst / low-history
-config/policy-config.yaml   # runtime policy (copied from contracts examples)
+config/policies/*.yaml      # seed policy per tenant (copied from contracts examples)
 artifacts/freeman-0.2.0.json
 tests/test_evaluate.py
 tests/test_policy.py
@@ -72,9 +73,14 @@ Use `../rba-infra`. Empty `scripts/` is reserved.
 | `GET` | `/healthz` | `{ "status": "ok" }` |
 | `GET` | `/metrics` | Prometheus scrape (not in `rba-contracts`) |
 | `POST` | `/risk/evaluate` | `RiskEvaluateRequest` → `RiskEvaluateResponse` |
-| `GET` | `/policy` | `PolicyConfig` (IdP-6) |
-| `PUT` | `/policy` | Replace active policy (in-process + YAML persist) |
-| `GET` | `/decisions` | Live decision browser (`DecisionListResponse`) |
+| `GET` | `/tenants/{tenant_id}/policy` | `TenantPolicy` |
+| `PUT` | `/tenants/{tenant_id}/policy` | Replace a tenant's policy (Postgres; all replicas within 5 s) |
+| `GET` | `/decisions?tenant_id=…` | Live decision browser (`DecisionListResponse`), always scoped to one tenant |
+| `GET` | `/decisions/{event_id}?tenant_id=…` | One decision; another tenant's event is a 404 |
+
+An unknown `tenant_id` on `/risk/evaluate` is a **404**, not a default policy: a
+silent default would hide a misconfigured tenant, and the IdP already turns a
+PDP non-answer into a step-up (ADR-0028 §1).
 
 Default port **8000**. OpenAPI in `../rba-contracts/openapi/risk-evaluate.yaml`.
 
@@ -101,7 +107,6 @@ action, and nothing rewrites `risk_score` — that is always Freeman's number
 | `supervised_second_opinion` | LogReg above its baked 1%-FPR threshold | `REQUIRE_MFA` |
 | `low_history` | `user_login_count` < 3 | — (reason only) |
 | `fallback` | scorer/profile failed | policy `fallback_action` |
-| `monitor_only` | policy `monitor_only` is on | forces `ALLOW`; the verdict moves to `monitored_action` |
 
 ### Supervised second opinion
 
@@ -113,33 +118,36 @@ structurally cannot (novel network + ordinary device); Freeman keeps producing
 the score and the reason trace. Set `SUPERVISED_ESCALATION_ENABLED=false`, or
 remove the artifact, to run Freeman alone.
 
-### Policy (runtime copy)
+### Tenant policies (ADR-0033 / ADR-0034)
 
-`config/policy-config.yaml` — score bands and per-app overrides. Defaults:
-LOW ≤ 0.30 `ALLOW`, MEDIUM ≤ 0.60 `REQUIRE_MFA`, HIGH ≤ 0.80 `REAUTHENTICATE`,
-CRITICAL `BLOCK`. `demo-banking-app` uses tighter bands. Fallback action:
-`REQUIRE_MFA`.
+One `TenantPolicy` per tenant, in the `tenant_policies` table. Every replica
+reads the same rows and caches each for `POLICY_CACHE_SECONDS` (5 s), so a
+`PUT` reaches all replicas within that window and survives restarts. (Before
+0.9.0 the policy was a YAML file inside the container and a `PUT` only reached
+the replica that served it.) On startup, tenants with no row are seeded from
+`config/policies/*.yaml`; an existing row is never overwritten.
 
-### Monitor-only mode (RF-09 / RNF-08, ADR-0028)
+| Seed | Base policy | Engine | Notes |
+|---|---|---|---|
+| `roku-bank` | `ALWAYS_MFA` | `MONITOR` | tight bands (≤0.20 / 0.45 / 0.70) |
+| `kaze-labs` | `PASSWORD_ONLY` | `ACTIVE` | ≤0.25 / 0.50 / 0.75 |
+| `rokusec` | `ALWAYS_MFA` | `ACTIVE` | `LOW → REQUIRE_MFA`: always a passkey, plus escalation |
 
-`monitor_only: true` on the default bundle or on one application. The full
-pipeline still runs — score, rules, escalation, persistence, outbox — and the
-response becomes `action: ALLOW` with the engine's verdict in
-`monitored_action` and a `monitor_only` reason at the head of the list.
+### Verdict and enforcement
 
-The stored row and the published event carry the **verdict**, not the ALLOW:
-RF-09 asks to record what the engine decided, and the `monitor_only` reason is
-what marks it unenforced (also what an idempotent replay reads back). Metrics
-follow the same rule — `rba_decisions_total` counts the verdict and carries an
-`enforced` label.
+`action` in the response, the row and the event is always the **engine's
+verdict**: score → bands → ladder, then the escalation floors above.
+`enforced_action` is what the PEP must apply:
 
-It also suppresses `fallback_action`: a scorer outage is not a reason to start
-acting on a tenant you are only watching. The fail-to-MFA guarantee lives at the
-PEP instead (`rba-idp`, `PDP_UNAVAILABLE_ACTION`), where the PDP's silence makes
-monitor mode unknowable.
+| `engine_mode` | `enforced_action` |
+|---|---|
+| `ACTIVE` | the verdict |
+| `MONITOR` | the base policy (`ALWAYS_MFA` → `REQUIRE_MFA`, `PASSWORD_ONLY` → `ALLOW`) |
+| `OFF` | the base policy (the IdP normally does not call the PDP at all) |
 
-Toggle it through `PUT /policy` — no redeploy (RNF-05). **Off by default; a
-bundle left on enforces nothing.**
+Under `MONITOR` a scorer failure also lands on the base policy: watching the
+engine must not start acting on users because Redis failed. `rba_decisions_total`
+carries both (`action`, `enforced_action`) plus `engine_mode` and `tenant`.
 
 ### Postgres tables (DB `rba_decision`)
 
@@ -228,7 +236,8 @@ Matches `../rba-contracts/examples/evaluate-request.json`.
 | `REDIS_KEY_PREFIX` | `rba:profile:` | |
 | `DATABASE_URL` | `postgresql+psycopg://rba:rba@localhost:5432/rba_decision` | created by `rba-infra` init |
 | `USE_MEMORY_DB` | `false` | sqlite StaticPool for tests |
-| `POLICY_CONFIG_PATH` | `config/policy-config.yaml` | |
+| `POLICY_SEED_DIR` | `config/policies` | seeds tenants with no policy row |
+| `POLICY_CACHE_SECONDS` | `5` | per-replica policy cache |
 | `FREEMAN_ARTIFACT_PATH` | `artifacts/freeman-0.2.0.json` | primary score + reasons |
 | `LOGREG_ARTIFACT_PATH` | `artifacts/logreg-0.1.0.json` | second opinion; missing → Freeman only |
 | `SUPERVISED_ESCALATION_ENABLED` | `true` | `false` → Freeman only |

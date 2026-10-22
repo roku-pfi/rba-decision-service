@@ -22,14 +22,13 @@ from rba_decision_service.db.session import (
     make_session_factory,
 )
 from rba_decision_service.main import create_app
-from rba_decision_service.policy.loader import load_policy_config
+from _policies import policies_for_tests
 from rba_decision_service.profile.store import InMemoryProfileStore
 from rba_decision_service.scoring.freeman import FreemanOnlineScorer
 from rba_decision_service.services.evaluate import EvaluateService
 
 ROOT = Path(__file__).resolve().parents[1]
 ARTIFACT = ROOT / "artifacts" / "freeman-0.2.0.json"
-POLICY = ROOT / "config" / "policy-config.yaml"
 
 
 @pytest.fixture(scope="module")
@@ -57,7 +56,7 @@ def service(scorer: FreemanOnlineScorer) -> EvaluateService:
     return EvaluateService(
         profiles=InMemoryProfileStore(),
         scorer=scorer,
-        policy=load_policy_config(POLICY),
+        policies=policies_for_tests(),
         session_factory=make_session_factory(engine),
         profile_write_mode="sync",
     )
@@ -66,7 +65,8 @@ def service(scorer: FreemanOnlineScorer) -> EvaluateService:
 def _req(**overrides) -> RiskEvaluateRequest:
     base = dict(
         event_id=uuid4(),
-        application_id="demo-banking-app",
+        tenant_id="roku-bank",
+        application_id="roku-bank-web",
         user_id="user-parity-1",
         timestamp=datetime(2020, 6, 1, 12, 0, tzinfo=timezone.utc),
         ip_address="203.0.113.10",
@@ -85,7 +85,6 @@ def test_healthz_and_evaluate_happy_path(scorer: FreemanOnlineScorer):
     settings = Settings(
         use_memory_db=True,
         redis_url="memory://",
-        policy_config_path=POLICY,
         freeman_artifact_path=ARTIFACT,
         profile_write_mode="sync",
     )
@@ -139,7 +138,7 @@ def test_fallback_when_scorer_missing():
     svc = EvaluateService(
         profiles=InMemoryProfileStore(),
         scorer=None,
-        policy=load_policy_config(POLICY),
+        policies=policies_for_tests(),
         session_factory=make_session_factory(engine),
         profile_write_mode="none",
     )
@@ -230,7 +229,7 @@ def test_impossible_travel_escalates_allow_to_mfa(service: EvaluateService):
     resp = service.evaluate(
         _req(
             user_id=uid,
-            application_id="demo-forum-app",
+            tenant_id="lenient", application_id="lenient-app",
             event_id=uuid4(),
             timestamp=t0 + timedelta(hours=1),
             country="JP",
@@ -253,7 +252,7 @@ def test_vpn_skips_teleport_and_escalates(service: EvaluateService):
     resp = service.evaluate(
         _req(
             user_id=uid,
-            application_id="demo-forum-app",
+            tenant_id="lenient", application_id="lenient-app",
             event_id=uuid4(),
             timestamp=t0 + timedelta(hours=1),
             country="US",
@@ -275,7 +274,7 @@ def test_missing_country_does_not_travel(service: EvaluateService):
     resp = service.evaluate(
         _req(
             user_id=uid,
-            application_id="demo-forum-app",
+            tenant_id="lenient", application_id="lenient-app",
             event_id=uuid4(),
             timestamp=t0 + timedelta(hours=1),
             country=None,

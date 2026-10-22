@@ -1,0 +1,19 @@
+# The platform tenant: RokuSec's own operators. Engine ACTIVE, and LOW maps to
+# REQUIRE_MFA, so even a usual login asks for the passkey while unusual ones
+# still escalate to reauthentication or a block. "Always MFA, plus the engine"
+# needs no extra concept — it is just a ladder.
+tenant_id: rokusec
+policy_version: "2.0.0"
+base_policy: ALWAYS_MFA
+engine_mode: ACTIVE
+score_to_level:
+  - { max: 0.20, level: LOW }
+  - { max: 0.45, level: MEDIUM }
+  - { max: 0.70, level: HIGH }
+  - { max: 1.00, level: CRITICAL }
+level_to_action:
+  LOW: REQUIRE_MFA
+  MEDIUM: REQUIRE_MFA
+  HIGH: REAUTHENTICATE
+  CRITICAL: BLOCK
+fallback_action: REQUIRE_MFA

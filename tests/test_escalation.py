@@ -18,7 +18,7 @@ from sqlalchemy import create_engine
 from sqlalchemy.pool import StaticPool
 
 from rba_decision_service.db.session import create_tables, make_session_factory
-from rba_decision_service.policy.loader import load_policy_config
+from _policies import policies_for_tests
 from rba_decision_service.profile.store import InMemoryProfileStore
 from rba_decision_service.scoring.freeman import FreemanOnlineScorer
 from rba_decision_service.scoring.logreg import LogRegOnlineScorer
@@ -29,7 +29,6 @@ from rba_decision_service.services.reasons import failed_login_signal
 ROOT = Path(__file__).resolve().parents[1]
 FREEMAN = ROOT / "artifacts" / "freeman-0.2.0.json"
 LOGREG = ROOT / "artifacts" / "logreg-0.1.0.json"
-POLICY = ROOT / "config" / "policy-config.yaml"
 
 T0 = datetime(2020, 6, 1, 12, 0, tzinfo=timezone.utc)
 
@@ -59,7 +58,7 @@ def _service(freeman, supervised=None) -> EvaluateService:
     return EvaluateService(
         profiles=InMemoryProfileStore(),
         scorer=freeman,
-        policy=load_policy_config(POLICY),
+        policies=policies_for_tests(),
         session_factory=make_session_factory(engine),
         profile_write_mode="sync",
         supervised=supervised,
@@ -69,7 +68,7 @@ def _service(freeman, supervised=None) -> EvaluateService:
 def _req(**overrides) -> RiskEvaluateRequest:
     base = dict(
         event_id=uuid4(),
-        application_id="demo-forum-app",
+        tenant_id="lenient", application_id="lenient-app",
         user_id="user-esc",
         timestamp=T0 + timedelta(hours=1),
         ip_address="203.0.113.10",
