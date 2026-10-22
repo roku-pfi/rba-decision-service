@@ -25,8 +25,9 @@ from rba_decision_service.metrics import metrics_response, observe_decision, obs
 from sqlalchemy import select
 
 from rba_decision_service.db.models import DecisionRow
-from rba_decision_service.db.session import create_tables, make_engine, make_session_factory
-from rba_decision_service.policy.store import DbPolicyStore, load_policy_dir
+from rba_decision_service.db.session import make_engine, make_session_factory
+from rba_decision_service.init import initialise
+from rba_decision_service.policy.store import DbPolicyStore
 from rba_decision_service.profile.store import InMemoryProfileStore, RedisProfileStore
 from rba_decision_service.scoring.freeman import FreemanOnlineScorer
 from rba_decision_service.scoring.logreg import LogRegOnlineScorer
@@ -84,13 +85,11 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             )
         else:
             engine = make_engine(settings.database_url)
-        create_tables(engine)
+        if settings.init_on_startup:
+            initialise(settings, engine)
         session_factory = make_session_factory(engine)
 
         policies = DbPolicyStore(session_factory, ttl_seconds=settings.policy_cache_seconds)
-        seeded = policies.seed(load_policy_dir(settings.policy_seed_dir))
-        if seeded:
-            logger.info("seeded tenant policies: %s", ", ".join(seeded))
         scorer = None
         artifact = Path(settings.freeman_artifact_path)
         if artifact.is_file():

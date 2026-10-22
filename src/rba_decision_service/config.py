@@ -30,6 +30,9 @@ class Settings(BaseSettings):
     )
     # When true, use in-memory SQLite (unit tests / no Docker).
     use_memory_db: bool = False
+    # C-4: create tables and seed policies at startup (compose, k3d, tests).
+    # Off where `python -m rba_decision_service.init` runs as a Job first.
+    init_on_startup: bool = True
 
     # Tenant policies live in Postgres (ADR-0033). On startup, any tenant
     # without a row is seeded from this directory; existing rows are never
