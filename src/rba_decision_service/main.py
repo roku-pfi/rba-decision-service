@@ -269,7 +269,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         except Exception as exc:  # pragma: no cover
             logger.exception("unhandled evaluate error")
             raise HTTPException(status_code=500, detail=str(exc)) from exc
-        observe_decision(body.tenant_id, response)
+        observe_decision(body.tenant_id, response, login_successful=body.login_successful)
         return response
 
     @app.post("/risk/confirm", response_model=LoginConfirmResponse)

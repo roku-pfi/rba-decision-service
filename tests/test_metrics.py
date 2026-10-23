@@ -65,3 +65,30 @@ def test_metrics_empty_then_decision_counters() -> None:
         )
         assert "rba_risk_score_bucket" in text
         assert 'handler="/risk/evaluate"' in text
+
+
+def test_failed_logins_and_rule_hits_feed_the_alarms() -> None:
+    """RF-16: the alert rules count wrong passwords and the rules that fired."""
+    if not ARTIFACT.is_file():
+        import pytest
+
+        pytest.skip(f"missing Freeman artifact at {ARTIFACT}")
+    settings = Settings(use_memory_db=True, redis_url="memory://", freeman_artifact_path=ARTIFACT)
+    with TestClient(create_app(settings)) as client:
+        base = {
+            "tenant_id": "roku-bank", "application_id": "roku-bank-web", "user_id": "victim",
+            "ip_address": "198.51.100.9", "asn": "16509", "country": "JP",
+            "device_type": "desktop", "os": "Windows", "browser": "Chrome",
+        }
+        for i in range(10):  # one IP past its threshold (ADR-0045)
+            client.post("/risk/evaluate", json={
+                **base, "event_id": str(uuid4()), "login_successful": False,
+                "timestamp": datetime(2020, 6, 1, 12, i, tzinfo=timezone.utc).isoformat(),
+            })
+        client.post("/risk/evaluate", json={
+            **base, "event_id": str(uuid4()), "login_successful": True,
+            "timestamp": datetime(2020, 6, 1, 12, 11, tzinfo=timezone.utc).isoformat(),
+        })
+        text = client.get("/metrics").text
+        assert 'rba_failed_logins_total{tenant="roku-bank"} 10.0' in text
+        assert 'rba_rule_hits_total{code="source_blocked",tenant="roku-bank"}' in text

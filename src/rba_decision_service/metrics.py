@@ -31,6 +31,22 @@ DECISIONS_TOTAL = Counter(
     labelnames=("tenant", "action", "enforced_action", "engine_mode", "risk_level", "fallback"),
 )
 
+# Rules that raised an action (ADR-0027, 0045): what the alarms watch (RF-16).
+RULE_CODES = frozenset({
+    "source_blocked", "account_cooldown", "failed_login_burst",
+    "impossible_travel", "vpn_or_hosting", "supervised_second_opinion",
+})
+RULE_HITS = Counter(
+    "rba_rule_hits_total",
+    "Decisions where a rule fired, by tenant and reason code",
+    labelnames=("tenant", "code"),
+)
+FAILED_LOGINS = Counter(
+    "rba_failed_logins_total",
+    "Wrong passwords reported to the PDP, by tenant",
+    labelnames=("tenant",),
+)
+
 RISK_SCORE = Histogram(
     "rba_risk_score",
     "Risk score emitted by POST /risk/evaluate",
@@ -63,7 +79,9 @@ def handler_from_path(path: str) -> str:
     return path
 
 
-def observe_decision(tenant_id: str, response: RiskEvaluateResponse) -> None:
+def observe_decision(
+    tenant_id: str, response: RiskEvaluateResponse, *, login_successful: bool = True
+) -> None:
     # `action` is the engine's verdict, `enforced_action` what the PEP applied:
     # under MONITOR the series show what the policy *would* do next to what it
     # did. Tenant is a label (a handful of values); user and score are not
@@ -77,6 +95,10 @@ def observe_decision(tenant_id: str, response: RiskEvaluateResponse) -> None:
         fallback=str(response.fallback).lower(),
     ).inc()
     RISK_SCORE.observe(response.risk_score)
+    if not login_successful:
+        FAILED_LOGINS.labels(tenant=tenant_id).inc()
+    for code in {r.code for r in response.reasons} & RULE_CODES:
+        RULE_HITS.labels(tenant=tenant_id, code=code).inc()
 
 
 def metrics_response() -> Response:
