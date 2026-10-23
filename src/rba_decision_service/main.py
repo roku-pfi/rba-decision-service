@@ -77,7 +77,14 @@ def _row_to_record(row: DecisionRow) -> DecisionRecord:
         fallback=row.fallback,
         features=FeatureVectorV1.model_validate(row.features) if row.features else None,
         login=LoginEventSnapshot.model_validate(row.login) if row.login else None,
+        step_up_passed_at=_utc(row.step_up_passed_at),
     )
+
+
+def _utc(value):
+    if value is not None and value.tzinfo is None:
+        return value.replace(tzinfo=timezone.utc)
+    return value
 
 
 def _build_profiles(settings: Settings):

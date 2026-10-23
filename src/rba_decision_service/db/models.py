@@ -73,6 +73,9 @@ class DecisionRow(Base):
     # shows next to the verdict. Nullable: rows before contracts 0.13.0 lack it.
     login: Mapped[dict | None] = mapped_column(JSONType, nullable=True)
     scored_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    # Set by the event-publisher from the LoginConfirmedEvent (RF-11): the user
+    # passed the step-up. Nullable, so kept databases get it added on startup.
+    step_up_passed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now(), nullable=False
     )

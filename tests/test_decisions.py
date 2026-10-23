@@ -122,3 +122,20 @@ def test_unknown_tenant_is_404_not_a_default_policy() -> None:
     with _client() as client:
         resp = client.post("/risk/evaluate", json=_req(tenant_id="nobody").model_dump(mode="json"))
         assert resp.status_code == 404
+
+
+def test_a_passed_step_up_shows_on_the_record() -> None:
+    """RF-11: the console tells a completed passkey from an abandoned one."""
+    with _client() as client:
+        req = _req(user_id="usr-stepup")
+        scored = client.post("/risk/evaluate", json=req.model_dump(mode="json")).json()
+        assert scored["enforced_action"] == "REQUIRE_MFA"  # Roku Bank: ALWAYS_MFA in MONITOR
+        _publish(client)
+        assert client.get(f"/decisions/{req.event_id}", params=BANK).json()["step_up_passed_at"] is None
+
+        confirmed = client.post(
+            "/risk/confirm", json={"event_id": str(req.event_id), "tenant_id": "roku-bank"}
+        )
+        assert confirmed.json()["confirmed"] is True
+        _publish(client)
+        assert client.get(f"/decisions/{req.event_id}", params=BANK).json()["step_up_passed_at"]
