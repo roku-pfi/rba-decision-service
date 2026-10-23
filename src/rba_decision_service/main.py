@@ -13,6 +13,8 @@ from rba_contracts import (
     Action,
     DecisionListResponse,
     DecisionRecord,
+    LoginConfirmRequest,
+    LoginConfirmResponse,
     RiskEvaluateRequest,
     RiskEvaluateResponse,
     TenantPolicy,
@@ -30,10 +32,19 @@ from rba_decision_service.db.models import DecisionRow
 from rba_decision_service.db.session import make_engine, make_session_factory
 from rba_decision_service.init import initialise
 from rba_decision_service.policy.store import DbPolicyStore
-from rba_decision_service.profile.store import InMemoryProfileStore, RedisProfileStore
+from rba_decision_service.profile.store import (
+    InMemoryPopulationStore,
+    InMemoryProfileStore,
+    RedisPopulationStore,
+    RedisProfileStore,
+)
 from rba_decision_service.scoring.freeman import FreemanOnlineScorer
 from rba_decision_service.scoring.logreg import LogRegOnlineScorer
-from rba_decision_service.services.evaluate import EvaluateService, UnknownTenant
+from rba_decision_service.services.evaluate import (
+    EvaluateService,
+    UnknownDecision,
+    UnknownTenant,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -69,6 +80,12 @@ def _build_profiles(settings: Settings):
     if settings.redis_url.startswith("memory://"):
         return InMemoryProfileStore()
     return RedisProfileStore(settings.redis_url, settings.redis_key_prefix)
+
+
+def _build_population(settings: Settings):
+    if settings.redis_url.startswith("memory://"):
+        return InMemoryPopulationStore()
+    return RedisPopulationStore(settings.redis_url, settings.redis_population_key)
 
 
 def create_app(settings: Settings | None = None) -> FastAPI:
@@ -121,6 +138,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         app.state.settings = settings
         app.state.evaluate_service = EvaluateService(
             profiles=profiles,
+            population=_build_population(settings),
             scorer=scorer,
             policies=policies,
             session_factory=session_factory,
@@ -215,6 +233,14 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             raise HTTPException(status_code=500, detail=str(exc)) from exc
         observe_decision(body.tenant_id, response)
         return response
+
+    @app.post("/risk/confirm", response_model=LoginConfirmResponse)
+    def confirm_login(body: LoginConfirmRequest, request: Request) -> LoginConfirmResponse:
+        service: EvaluateService = request.app.state.evaluate_service
+        try:
+            return service.confirm(body)
+        except UnknownDecision:
+            raise HTTPException(status_code=404, detail="unknown event") from None
 
     return app
 

@@ -28,7 +28,7 @@ from rba_decision_service.scoring.freeman import FreemanOnlineScorer
 from rba_decision_service.services.evaluate import EvaluateService
 
 ROOT = Path(__file__).resolve().parents[1]
-ARTIFACT = ROOT / "artifacts" / "freeman-0.2.0.json"
+ARTIFACT = ROOT / "artifacts" / "freeman-0.3.0.json"
 
 
 @pytest.fixture(scope="module")
@@ -263,7 +263,9 @@ def test_vpn_skips_teleport_and_escalates(service: EvaluateService):
     codes = [r.code for r in resp.reasons]
     assert "vpn_or_hosting" in codes
     assert "impossible_travel" not in codes
-    assert resp.action.value == "REQUIRE_MFA"
+    # At least a step-up whatever the score (a new country on a hosting network
+    # also scores CRITICAL, which the lenient policy maps to BLOCK).
+    assert resp.action.value in {"REQUIRE_MFA", "REAUTHENTICATE", "BLOCK"}
     assert resp.reasons[0].code == "vpn_or_hosting"
 
 
@@ -307,6 +309,7 @@ def test_freeman_online_matches_ml_training_event_api(scorer: FreemanOnlineScore
             },
             "global_total": dict(scorer.artifact.global_total),
             "vocab": dict(scorer.artifact.vocab),
+            "population_prior_strength": scorer.artifact.population_prior_strength,
         }
     )
     profile = ProfileState()
@@ -316,8 +319,8 @@ def test_freeman_online_matches_ml_training_event_api(scorer: FreemanOnlineScore
         "asn": "13335",
         "country": "AR",
         "device_type": "desktop",
-        "os": "Windows",
-        "browser": "Chrome",
+        "os": "Windows 10",
+        "browser": "Chrome 130.0.6723",  # a version: both sides score the family
     }
     values = {
         "ip_address": "203.0.113.50",
@@ -331,6 +334,18 @@ def test_freeman_online_matches_ml_training_event_api(scorer: FreemanOnlineScore
     online_pred = scorer.predict(event, profile)
     offline_logrisk = offline.score_event(values, profile.freeman_counts, profile.freeman_totals)
     assert online_pred.logrisk == pytest.approx(offline_logrisk, rel=1e-9, abs=1e-9)
+
+    # With the deployment's population (ADR-0042) both sides blend the same way.
+    from rba_features.population import PopulationCounts, field_name
+
+    population = PopulationCounts(
+        total=40, counts={field_name("country", "AR"): 30, field_name("browser", "Chrome"): 25}
+    )
+    assert scorer.predict(event, profile, population).logrisk == pytest.approx(
+        offline.score_event(values, profile.freeman_counts, profile.freeman_totals, population),
+        rel=1e-9,
+        abs=1e-9,
+    )
     assert online_pred.risk_score == pytest.approx(
         FreemanScorer.logrisk_to_proba(offline_logrisk), rel=1e-9, abs=1e-9
     )

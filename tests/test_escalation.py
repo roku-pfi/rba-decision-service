@@ -27,8 +27,8 @@ from rba_decision_service.services.evaluate import EvaluateService
 from rba_decision_service.services.reasons import failed_login_signal
 
 ROOT = Path(__file__).resolve().parents[1]
-FREEMAN = ROOT / "artifacts" / "freeman-0.2.0.json"
-LOGREG = ROOT / "artifacts" / "logreg-0.1.0.json"
+FREEMAN = ROOT / "artifacts" / "freeman-0.3.0.json"
+LOGREG = ROOT / "artifacts" / "logreg-0.2.0.json"
 
 T0 = datetime(2020, 6, 1, 12, 0, tzinfo=timezone.utc)
 
@@ -197,9 +197,10 @@ def test_supervised_artifact_reproduces_its_operating_point(supervised):
     assert len(a.coef) == len(a.features) == len(a.mean) == len(a.scale)
     assert 0.0 < a.threshold < 1.0
     assert a.target_fpr == 0.01
-    # Pinned to the shipped artifact (findings 2026-08-19). A retrain that moves
-    # this should update the finding in the same change, not slip through.
-    assert a.recall_at_threshold == pytest.approx(0.3947, abs=1e-4)
+    # Pinned to the shipped artifact (findings 2026-08-19; retrained on browser /
+    # OS families, finding 2026-10-23). A retrain that moves this should update
+    # the finding in the same change, not slip through.
+    assert a.recall_at_threshold == pytest.approx(0.4737, abs=1e-4)
 
 
 def test_supervised_scores_a_familiar_login_below_threshold(supervised):

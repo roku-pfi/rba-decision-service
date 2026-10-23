@@ -6,12 +6,15 @@ import logging
 from copy import deepcopy
 from datetime import datetime, timezone
 from typing import Any
-from uuid import UUID
+from uuid import UUID, uuid5
 
 from rba_contracts import (
     FEATURE_SCHEMA_VERSION,
     DecisionMadeEvent,
     FeatureVectorV1,
+    LoginConfirmedEvent,
+    LoginConfirmRequest,
+    LoginConfirmResponse,
     LoginEventSnapshot,
     RiskEvaluateRequest,
     RiskEvaluateResponse,
@@ -19,16 +22,19 @@ from rba_contracts import (
     enforced_action,
 )
 from rba_contracts.enums import Action, EngineMode, RiskLevel
-from rba_contracts.events import DECISION_MADE_CHANNEL
-from rba_features.features import compute_features, update_profile
+from rba_contracts.events import DECISION_MADE_CHANNEL, LOGIN_CONFIRMED_CHANNEL
+from rba_features.features import compute_features, learn_at_decision, update_profile
+from rba_features.population import PopulationCounts, population_fields
 from rba_features.profile import ProfileState
 from rba_features.travel import TravelSignals, compute_travel
+from sqlalchemy import select
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session, sessionmaker
 
 from rba_decision_service.db.models import DecisionRow, OutboxRow
 from rba_decision_service.db.session import get_decision_by_event_id
 from rba_decision_service.policy.store import PolicySource
-from rba_decision_service.profile.store import ProfileStore
+from rba_decision_service.profile.store import PopulationStore, ProfileStore
 from rba_decision_service.scoring.freeman import FreemanOnlineScorer
 from rba_decision_service.scoring.logreg import LogRegOnlineScorer, SupervisedPrediction
 from rba_decision_service.services.escalate import escalate
@@ -52,6 +58,10 @@ class UnknownTenant(LookupError):
     """
 
 
+class UnknownDecision(LookupError):
+    """No decision with that event_id in that tenant (another tenant's is the same)."""
+
+
 class EvaluateService:
     def __init__(
         self,
@@ -65,8 +75,10 @@ class EvaluateService:
         failed_login_lockout_threshold: int = 10,
         supervised: LogRegOnlineScorer | None = None,
         fallback_risk_score: float = 0.0,
+        population: PopulationStore | None = None,
     ) -> None:
         self.profiles = profiles
+        self.population = population
         self.scorer = scorer
         self.policies = policies
         self.session_factory = session_factory
@@ -108,7 +120,7 @@ class EvaluateService:
             if self.scorer is None:
                 raise RuntimeError("scorer not loaded")
 
-            prediction = self.scorer.predict(event, profile)
+            prediction = self.scorer.predict(event, profile, self._population_for(event))
             risk_score = prediction.risk_score
             model_version = prediction.model_version
             feature_schema_version = prediction.feature_schema_version
@@ -205,14 +217,92 @@ class EvaluateService:
             not fallback
             and profile is not None
             and self.profile_write_mode == "sync"
+            and learn_at_decision(request.login_successful, enforced.value)
         ):
-            updated = update_profile(deepcopy(profile), request.to_feature_event())
-            try:
-                self.profiles.put(request.user_id, updated)
-            except Exception:
-                logger.exception("profile sync write failed user_id=%s", request.user_id)
+            self._learn_sync(request.user_id, request.to_feature_event(), profile)
 
         return response
+
+    def confirm(self, request: LoginConfirmRequest) -> LoginConfirmResponse:
+        """The user passed the step-up this decision asked for (ADR-0042).
+
+        Emits LoginConfirmedEvent with the decision's login snapshot, through
+        the same outbox as the decision, so profile-service learns the context
+        now. Only an enforced step-up on a correct password can be confirmed,
+        and only once: the event id is derived from the decision's.
+        """
+        unconfirmed = LoginConfirmResponse(event_id=request.event_id, confirmed=False)
+        with self.session_factory() as session:
+            row = get_decision_by_event_id(session, request.event_id)
+            if row is None or row.tenant_id != request.tenant_id:
+                raise UnknownDecision(request.event_id)
+            if (
+                row.login is None
+                or row.login.get("login_successful") is False
+                or row.enforced_action
+                not in (Action.REQUIRE_MFA.value, Action.REAUTHENTICATE.value)
+            ):
+                return unconfirmed
+            confirmation_id = uuid5(request.event_id, "login-confirmed")
+            if session.scalar(
+                select(OutboxRow.id).where(OutboxRow.event_id == confirmation_id)
+            ):
+                return unconfirmed
+            snapshot = LoginEventSnapshot.model_validate(row.login)
+            event = LoginConfirmedEvent(
+                event_id=confirmation_id,
+                decision_event_id=request.event_id,
+                occurred_at=datetime.now(timezone.utc),
+                tenant_id=row.tenant_id,
+                application_id=row.application_id,
+                user_id=row.user_id,
+                login=snapshot,
+            )
+            session.add(
+                OutboxRow(
+                    event_id=confirmation_id,
+                    channel=LOGIN_CONFIRMED_CHANNEL,
+                    payload=event.model_dump(mode="json"),
+                )
+            )
+            try:
+                session.commit()
+            except IntegrityError:  # a concurrent confirm won
+                session.rollback()
+                return unconfirmed
+            user_id = row.user_id
+
+        if self.profile_write_mode == "sync":
+            try:
+                profile = self.profiles.get(user_id)
+            except Exception:
+                logger.exception("profile read failed on confirm user_id=%s", user_id)
+            else:
+                self._learn_sync(user_id, snapshot.to_feature_event(), profile)
+        return LoginConfirmResponse(event_id=request.event_id, confirmed=True)
+
+    def _population_for(self, event: dict[str, Any]) -> PopulationCounts | None:
+        """The deployment's counts for this login's values (ADR-0042).
+
+        Unreadable counts mean scoring against the training population alone,
+        as the model did before; that is a weaker prior, not a reason to fall back.
+        """
+        if self.population is None:
+            return None
+        try:
+            return self.population.get(population_fields(event))
+        except Exception:
+            logger.warning("population counts unavailable; training prior only")
+            return None
+
+    def _learn_sync(self, user_id: str, event: dict[str, Any], profile: ProfileState) -> None:
+        updated = update_profile(deepcopy(profile), event)
+        try:
+            self.profiles.put(user_id, updated)
+            if self.population is not None and event.get("login_successful") is not False:
+                self.population.add(population_fields(event))
+        except Exception:
+            logger.exception("profile sync write failed user_id=%s", user_id)
 
     def _persist(
         self,

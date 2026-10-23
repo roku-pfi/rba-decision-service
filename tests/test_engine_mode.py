@@ -25,7 +25,7 @@ from rba_decision_service.scoring.freeman import FreemanOnlineScorer
 from rba_decision_service.services.evaluate import EvaluateService
 
 ROOT = Path(__file__).resolve().parents[1]
-FREEMAN = ROOT / "artifacts" / "freeman-0.2.0.json"
+FREEMAN = ROOT / "artifacts" / "freeman-0.3.0.json"
 
 
 @pytest.fixture(scope="module")

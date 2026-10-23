@@ -23,13 +23,17 @@ PEP → POST /risk/evaluate   (tenant_id names the tenant, ADR-0033)
         → load ProfileState (Redis key rba:profile:{user_id})
         → compute_features (rba-features)   # current event NOT in profile
         → compute_travel (rba-features)     # country-centroid rule, not Freeman
-        → FreemanOnlineScorer (JSON artifact, β=5)
+        → FreemanOnlineScorer (JSON artifact, β=5; population = rba:population, κ=100, ADR-0042)
         → reasons from top LLR contributions + soft rules
         → apply_policy (score → level → action)
         → travel/VPN escalate ALLOW → REQUIRE_MFA (ADR-0022)
         → enforced_action: the verdict (ACTIVE) or the base policy (MONITOR) (ADR-0034)
         → persist decisions + outbox (one Postgres txn)
-        → optional sync profile write (PROFILE_WRITE_MODE=sync)
+        → optional sync profile write (PROFILE_WRITE_MODE=sync), ALLOW only
+
+IdP → POST /risk/confirm      (the step-up of event_id was passed, ADR-0042)
+        → outbox rba.login.confirmed.v1 with the decision's login snapshot
+        → profile-service learns it (an abandoned step-up is never learned)
 ```
 
 On scorer or profile failure the service still returns 200 with
@@ -43,11 +47,11 @@ and does not rescore.
 
 ```
 src/rba_decision_service/
-├── main.py                 # FastAPI: /healthz, /metrics, /risk/evaluate, /tenants/{id}/policy, /decisions
+├── main.py                 # FastAPI: /healthz, /metrics, /risk/evaluate, /risk/confirm, /tenants/{id}/policy, /decisions
 ├── metrics.py              # Prometheus counters/histograms (K8s-2)
 ├── config.py               # pydantic-settings (env / .env)
 ├── scoring/freeman.py      # JSON artifact scorer (no pickle on the hot path)
-├── profile/store.py        # RedisProfileStore + InMemoryProfileStore
+├── profile/store.py        # profile + population stores (Redis / in-memory)
 ├── db/models.py            # decisions + outbox + tenant_policies (SQLAlchemy)
 ├── db/session.py
 ├── policy/store.py         # tenant policies in Postgres, per-replica TTL cache, seeding
@@ -55,7 +59,7 @@ src/rba_decision_service/
     ├── evaluate.py         # orchestration
     └── reasons.py          # contributions → Reason; burst / low-history
 config/policies/*.yaml      # seed policy per tenant (copied from contracts examples)
-artifacts/freeman-0.2.0.json
+artifacts/freeman-0.3.0.json
 tests/test_evaluate.py
 tests/test_policy.py
 tests/test_decisions.py
@@ -110,7 +114,7 @@ action, and nothing rewrites `risk_score` — that is always Freeman's number
 
 ### Supervised second opinion
 
-`artifacts/logreg-0.1.0.json` (1.5 KB) carries mean/scale/coef/intercept over the
+`artifacts/logreg-0.2.0.json` (1.5 KB) carries mean/scale/coef/intercept over the
 same `FEATURE_NAMES` plus the **operating point calibrated offline** — serving
 never re-derives the threshold. Scoring is one dot product in-process: no
 sklearn, no pickle, no extra container, no network hop. It catches what Freeman
@@ -187,7 +191,7 @@ JSON only on the hot path (no pickle). Export from `rba-ml-training/`:
 ```bash
 python -m ml.export_freeman \
   --pickle artifacts/step5/freeman.pkl \
-  --out ../rba-decision-service/artifacts/freeman-0.2.0.json \
+  --out ../rba-decision-service/artifacts/freeman-0.3.0.json \
   --beta 5.0
 ```
 
@@ -234,12 +238,13 @@ Matches `../rba-contracts/examples/evaluate-request.json`.
 |---|---|---|
 | `REDIS_URL` | `redis://localhost:6379/0` | `memory://` → in-process store |
 | `REDIS_KEY_PREFIX` | `rba:profile:` | |
+| `REDIS_POPULATION_KEY` | `rba:population` | learned-login counts, Freeman's population (ADR-0042) |
 | `DATABASE_URL` | `postgresql+psycopg://rba:rba@localhost:5432/rba_decision` | created by `rba-infra` init |
 | `USE_MEMORY_DB` | `false` | sqlite StaticPool for tests |
 | `POLICY_SEED_DIR` | `config/policies` | seeds tenants with no policy row |
 | `POLICY_CACHE_SECONDS` | `5` | per-replica policy cache |
-| `FREEMAN_ARTIFACT_PATH` | `artifacts/freeman-0.2.0.json` | primary score + reasons |
-| `LOGREG_ARTIFACT_PATH` | `artifacts/logreg-0.1.0.json` | second opinion; missing → Freeman only |
+| `FREEMAN_ARTIFACT_PATH` | `artifacts/freeman-0.3.0.json` | primary score + reasons |
+| `LOGREG_ARTIFACT_PATH` | `artifacts/logreg-0.2.0.json` | second opinion; missing → Freeman only |
 | `SUPERVISED_ESCALATION_ENABLED` | `true` | `false` → Freeman only |
 | `PROFILE_WRITE_MODE` | `sync` | `none` when profile-service owns writes |
 | `FAILED_LOGIN_BURST_THRESHOLD` | `3` | floor `REAUTHENTICATE` |

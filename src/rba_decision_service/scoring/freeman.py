@@ -11,7 +11,9 @@ from pathlib import Path
 from typing import Any, Mapping
 
 from rba_contracts.model import ModelPrediction, SignalContribution
+from rba_features.canonical import canonical_event
 from rba_features.features import is_missing, to_epoch
+from rba_features.population import PopulationCounts
 from rba_features.profile import ProfileState
 
 
@@ -25,6 +27,8 @@ class FreemanArtifact:
     global_counts: dict[str, Counter]
     global_total: dict[str, int]
     vocab: dict[str, int]
+    # kappa (ADR-0042); None for artifacts trained before it: training only.
+    population_prior_strength: float | None = None
 
 
 def load_freeman_artifact(path: Path) -> FreemanArtifact:
@@ -39,6 +43,11 @@ def load_freeman_artifact(path: Path) -> FreemanArtifact:
         global_counts={f: Counter(c) for f, c in scorer["global_counts"].items()},
         global_total={f: int(t) for f, t in scorer["global_total"].items()},
         vocab={f: int(v) for f, v in scorer["vocab"].items()},
+        population_prior_strength=(
+            None
+            if scorer.get("population_prior_strength") is None
+            else float(scorer["population_prior_strength"])
+        ),
     )
 
 
@@ -56,6 +65,7 @@ def _hour_str(ts: Any) -> str | None:
 
 def event_to_freeman_values(event: Mapping[str, Any], features: tuple[str, ...]) -> dict[str, str]:
     """Build the categorical map Freeman expects (string values; hour as decimal)."""
+    event = canonical_event(event)
     out: dict[str, str] = {}
     for f in features:
         if f == "hour":
@@ -82,21 +92,30 @@ class FreemanOnlineScorer:
     def from_path(cls, path: Path) -> "FreemanOnlineScorer":
         return cls(load_freeman_artifact(path))
 
-    def _p_global(self, feature: str, value: str) -> float:
+    def _p_global(
+        self, feature: str, value: str, population: PopulationCounts | None = None
+    ) -> float:
         a = self.artifact
         c = a.global_counts[feature].get(value, 0)
-        return (c + a.alpha) / (a.global_total[feature] + a.alpha * (a.vocab[feature] + 1))
+        p_train = (c + a.alpha) / (a.global_total[feature] + a.alpha * (a.vocab[feature] + 1))
+        kappa = a.population_prior_strength
+        if population is None or kappa is None:
+            return p_train
+        # ADR-0042: the deployment's learned logins, with the training data as a
+        # prior worth kappa logins (rba_features.population).
+        return (population.count(feature, value) + kappa * p_train) / (population.total + kappa)
 
     def contributions(
         self,
         values: dict[str, str],
         profile: ProfileState,
+        population: PopulationCounts | None = None,
     ) -> dict[str, float]:
         a = self.artifact
         out: dict[str, float] = {}
         for f in a.features:
             v = values[f]
-            pg = self._p_global(f, v)
+            pg = self._p_global(f, v, population)
             c = profile.freeman_count(f, v)
             t = profile.freeman_total(f)
             pu = (c + a.beta * pg) / (t + a.beta)
@@ -111,9 +130,14 @@ class FreemanOnlineScorer:
         z = math.exp(logrisk)
         return z / (1.0 + z)
 
-    def predict(self, event: Mapping[str, Any], profile: ProfileState) -> ModelPrediction:
+    def predict(
+        self,
+        event: Mapping[str, Any],
+        profile: ProfileState,
+        population: PopulationCounts | None = None,
+    ) -> ModelPrediction:
         values = event_to_freeman_values(event, self.artifact.features)
-        contrib = self.contributions(values, profile)
+        contrib = self.contributions(values, profile, population)
         logrisk = float(sum(contrib.values()))
         risk_score = self.logrisk_to_proba(logrisk)
         contributions = [

@@ -21,6 +21,8 @@ class Settings(BaseSettings):
 
     redis_url: str = "redis://localhost:6379/0"
     redis_key_prefix: str = "rba:profile:"
+    # ADR-0042: the deployment's learned-login counts (profile-service writes).
+    redis_population_key: str = "rba:population"
     # sync: update Redis after each decision (Phase 3 thin slice).
     # none: read-only (Phase 4 profile-service owns writes).
     profile_write_mode: Literal["sync", "none"] = "sync"
@@ -42,11 +44,11 @@ class Settings(BaseSettings):
     # writes it.
     policy_cache_seconds: float = 5.0
     freeman_artifact_path: Path = Field(
-        default=_REPO_ROOT / "artifacts" / "freeman-0.2.0.json"
+        default=_REPO_ROOT / "artifacts" / "freeman-0.3.0.json"
     )
     # Supervised second opinion (ADR-0027). Missing file → Freeman only.
     logreg_artifact_path: Path = Field(
-        default=_REPO_ROOT / "artifacts" / "logreg-0.1.0.json"
+        default=_REPO_ROOT / "artifacts" / "logreg-0.2.0.json"
     )
     supervised_escalation_enabled: bool = True
 
