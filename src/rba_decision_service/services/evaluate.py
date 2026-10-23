@@ -91,12 +91,6 @@ class EvaluateService:
         self.fallback_risk_score = fallback_risk_score
 
     def evaluate(self, request: RiskEvaluateRequest) -> RiskEvaluateResponse:
-        # Idempotent replay: same event_id → prior decision.
-        with stage("replay_check"), self.session_factory() as session:
-            existing = get_decision_by_event_id(session, request.event_id)
-            if existing is not None:
-                return self._row_to_response(existing)
-
         with stage("policy"):
             policy = self.policies.get(request.tenant_id)
         if policy is None:
@@ -218,8 +212,13 @@ class EvaluateService:
         feature_model = (
             FeatureVectorV1.model_validate(features_dict) if features_dict else None
         )
+        # Idempotent replay: the event_id is the decisions key, so a replay
+        # fails the insert and gets the prior decision. One transaction per
+        # decision; a separate look-up first cost a pooled connection each.
         with stage("persist"):
-            self._persist(request, response, feature_model)
+            prior = self._persist(request, response, feature_model)
+        if prior is not None:
+            return prior
 
         # A presenter override is a demo prop, not where the user was (ADR-0032).
         if (
@@ -321,7 +320,8 @@ class EvaluateService:
         request: RiskEvaluateRequest,
         response: RiskEvaluateResponse,
         features: FeatureVectorV1 | None,
-    ) -> None:
+    ) -> RiskEvaluateResponse | None:
+        """Record the decision and its outbox event; the prior decision on a replay."""
         snapshot = LoginEventSnapshot(
             login_timestamp=request.timestamp,
             ip_address=request.ip_address,
@@ -353,10 +353,6 @@ class EvaluateService:
             login=snapshot,
         )
         with self.session_factory() as session:
-            # Re-check idempotency inside the write txn.
-            if get_decision_by_event_id(session, request.event_id) is not None:
-                session.commit()
-                return
             session.add(
                 DecisionRow(
                     event_id=response.event_id,
@@ -386,7 +382,15 @@ class EvaluateService:
                     payload=event.model_dump(mode="json"),
                 )
             )
-            session.commit()
+            try:
+                session.commit()
+            except IntegrityError:
+                session.rollback()
+                existing = get_decision_by_event_id(session, request.event_id)
+                if existing is None:
+                    raise
+                return self._row_to_response(existing)
+        return None
 
     @staticmethod
     def _row_to_response(row: DecisionRow) -> RiskEvaluateResponse:
