@@ -92,3 +92,15 @@ def test_another_tenants_decision_cannot_be_confirmed(service):
         service.confirm(LoginConfirmRequest(event_id=d.event_id, tenant_id="lenient"))
     with pytest.raises(UnknownDecision):
         service.confirm(LoginConfirmRequest(event_id=uuid4(), tenant_id="passkey"))
+
+
+def test_a_simulated_login_teaches_nothing(service):
+    """The presenter's travel override is a demo prop: passing its step-up must
+    not make Japan familiar for the attack scenes after it (ADR-0032)."""
+    d = service.evaluate(_req(tenant_id="passkey", user_id="u6", country="JP", simulated=True))
+    assert not service.confirm(LoginConfirmRequest(event_id=d.event_id, tenant_id="passkey")).confirmed
+    assert _confirmations(service) == []
+    assert "JP" not in service.profiles.get("u6").seen_countries
+
+    service.evaluate(_req(tenant_id="lenient", user_id="u7", simulated=True))
+    assert service.profiles.get("u7").login_count == 0

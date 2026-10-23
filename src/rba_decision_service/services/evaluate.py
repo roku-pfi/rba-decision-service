@@ -214,8 +214,10 @@ class EvaluateService:
         )
         self._persist(request, response, feature_model)
 
+        # A presenter override is a demo prop, not where the user was (ADR-0032).
         if (
             not fallback
+            and not request.simulated
             and profile is not None
             and self.profile_write_mode == "sync"
             and learn_at_decision(request.login_successful, enforced.value)
@@ -230,7 +232,8 @@ class EvaluateService:
         Emits LoginConfirmedEvent with the decision's login snapshot, through
         the same outbox as the decision, so profile-service learns the context
         now. Only an enforced step-up on a correct password can be confirmed,
-        and only once: the event id is derived from the decision's.
+        and only once: the event id is derived from the decision's. A
+        simulated login is never confirmed, so it teaches the profile nothing.
         """
         unconfirmed = LoginConfirmResponse(event_id=request.event_id, confirmed=False)
         with self.session_factory() as session:
@@ -239,6 +242,7 @@ class EvaluateService:
                 raise UnknownDecision(request.event_id)
             if (
                 row.login is None
+                or row.simulated
                 or row.login.get("login_successful") is False
                 or row.enforced_action
                 not in (Action.REQUIRE_MFA.value, Action.REAUTHENTICATE.value)
