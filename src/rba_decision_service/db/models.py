@@ -9,7 +9,7 @@ from __future__ import annotations
 from datetime import datetime
 from uuid import UUID
 
-from sqlalchemy import Boolean, DateTime, Float, String, func
+from sqlalchemy import Boolean, DateTime, Float, Index, String, func
 from sqlalchemy.dialects.postgresql import JSONB, UUID as PGUUID
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column
 from sqlalchemy.types import JSON, TypeDecorator, Uuid
@@ -43,6 +43,12 @@ class Base(DeclarativeBase):
 
 class DecisionRow(Base):
     __tablename__ = "decisions"
+    # The console lists a tenant's (or a user's) newest decisions: without these
+    # the list sorted every row of the tenant, 0.8 s at 120k rows.
+    __table_args__ = (
+        Index("ix_decisions_tenant_scored", "tenant_id", "scored_at"),
+        Index("ix_decisions_tenant_user_scored", "tenant_id", "user_id", "scored_at"),
+    )
 
     event_id: Mapped[UUID] = mapped_column(GUID(), primary_key=True)
     # ADR-0033: every read is filtered by tenant.
