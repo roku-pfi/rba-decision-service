@@ -4,12 +4,14 @@ from __future__ import annotations
 
 from collections.abc import Iterator
 from contextlib import contextmanager
+from datetime import datetime
+from uuid import UUID
 
-from sqlalchemy import create_engine, inspect, select, text
+from sqlalchemy import create_engine, inspect, text
 from sqlalchemy.engine import Engine
 from sqlalchemy.orm import Session, sessionmaker
 
-from rba_decision_service.db.models import Base, DecisionRow, OutboxRow
+from rba_decision_service.db.models import Base, DecisionRow
 
 
 def make_engine(url: str, *, echo: bool = False, pool_size: int | None = None) -> Engine:
@@ -72,9 +74,28 @@ def session_scope(factory: sessionmaker[Session]) -> Iterator[Session]:
         session.close()
 
 
-def get_decision_by_event_id(session: Session, event_id) -> DecisionRow | None:
-    return session.scalar(select(DecisionRow).where(DecisionRow.event_id == event_id))
+def decision_row_from_event(event: dict) -> DecisionRow:
+    """The read-model row for a DecisionMadeEvent payload (the event-publisher
+    writes the same row, ADR-0044)."""
+    return DecisionRow(
+        event_id=UUID(event["event_id"]),
+        tenant_id=event["tenant_id"],
+        application_id=event["application_id"],
+        user_id=event["user_id"],
+        risk_score=event["risk_score"],
+        risk_level=event["risk_level"],
+        action=event["action"],
+        enforced_action=event["enforced_action"],
+        engine_mode=event["engine_mode"],
+        simulated=event.get("simulated", False),
+        model_version=event["model_version"],
+        policy_version=event["policy_version"],
+        feature_schema_version=event["feature_schema_version"],
+        fallback=event.get("fallback", False),
+        reasons=event.get("reasons") or [],
+        features=event.get("features"),
+        login=event.get("login"),
+        scored_at=datetime.fromisoformat(event["occurred_at"]),
+    )
 
 
-def get_outbox_by_event_id(session: Session, event_id) -> OutboxRow | None:
-    return session.scalar(select(OutboxRow).where(OutboxRow.event_id == event_id))

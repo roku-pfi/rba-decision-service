@@ -1,4 +1,4 @@
-"""Core evaluate orchestration (features → score → policy → persist)."""
+"""Core evaluate orchestration (features → score → policy → journal)."""
 
 from __future__ import annotations
 
@@ -21,18 +21,15 @@ from rba_contracts import (
     apply_policy,
     enforced_action,
 )
-from rba_contracts.enums import Action, EngineMode, RiskLevel
+from rba_contracts.enums import Action
 from rba_contracts.events import DECISION_MADE_CHANNEL, LOGIN_CONFIRMED_CHANNEL
 from rba_features.features import compute_features, learn_at_decision, update_profile
 from rba_features.population import PopulationCounts, hier_read_fields, population_fields
 from rba_features.profile import ProfileState
 from rba_features.travel import TravelSignals, compute_travel
-from sqlalchemy import select
-from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session, sessionmaker
 
-from rba_decision_service.db.models import DecisionRow, OutboxRow
-from rba_decision_service.db.session import get_decision_by_event_id
+from rba_decision_service.journal import DecisionJournal, InMemoryJournal
 from rba_decision_service.metrics import stage
 from rba_decision_service.policy.store import PolicySource
 from rba_decision_service.profile.store import PopulationStore, ProfileStore
@@ -71,7 +68,8 @@ class EvaluateService:
         profiles: ProfileStore,
         scorer: FreemanOnlineScorer | HierarchicalScorer | None,
         policies: PolicySource,
-        session_factory: sessionmaker[Session],
+        journal: DecisionJournal | None = None,
+        session_factory: sessionmaker[Session] | None = None,
         profile_write_mode: str = "sync",
         failed_login_burst_threshold: int = 3,
         failed_login_lockout_threshold: int = 10,
@@ -83,6 +81,8 @@ class EvaluateService:
         self.population = population
         self.scorer = scorer
         self.policies = policies
+        self.journal = journal if journal is not None else InMemoryJournal()
+        # Reads of the decisions read model only (main.py); never on evaluate.
         self.session_factory = session_factory
         self.profile_write_mode = profile_write_mode
         self.failed_login_burst_threshold = failed_login_burst_threshold
@@ -212,11 +212,10 @@ class EvaluateService:
         feature_model = (
             FeatureVectorV1.model_validate(features_dict) if features_dict else None
         )
-        # Idempotent replay: the event_id is the decisions key, so a replay
-        # fails the insert and gets the prior decision. One transaction per
-        # decision; a separate look-up first cost a pooled connection each.
-        with stage("persist"):
-            prior = self._persist(request, response, feature_model)
+        # Idempotent replay: the event_id keys the journal, so a replay gets the
+        # prior decision back instead of a second record (ADR-0044).
+        with stage("journal"):
+            prior = self._record(request, response, feature_model)
         if prior is not None:
             return prior
 
@@ -236,52 +235,41 @@ class EvaluateService:
         """The user passed the step-up this decision asked for (ADR-0042).
 
         Emits LoginConfirmedEvent with the decision's login snapshot, through
-        the same outbox as the decision, so profile-service learns the context
+        the same journal as the decision, so profile-service learns the context
         now. Only an enforced step-up on a correct password can be confirmed,
         and only once: the event id is derived from the decision's. A
         simulated login is never confirmed, so it teaches the profile nothing.
         """
         unconfirmed = LoginConfirmResponse(event_id=request.event_id, confirmed=False)
-        with self.session_factory() as session:
-            row = get_decision_by_event_id(session, request.event_id)
-            if row is None or row.tenant_id != request.tenant_id:
-                raise UnknownDecision(request.event_id)
-            if (
-                row.login is None
-                or row.simulated
-                or row.login.get("login_successful") is False
-                or row.enforced_action
-                not in (Action.REQUIRE_MFA.value, Action.REAUTHENTICATE.value)
-            ):
-                return unconfirmed
-            confirmation_id = uuid5(request.event_id, "login-confirmed")
-            if session.scalar(
-                select(OutboxRow.id).where(OutboxRow.event_id == confirmation_id)
-            ):
-                return unconfirmed
-            snapshot = LoginEventSnapshot.model_validate(row.login)
-            event = LoginConfirmedEvent(
-                event_id=confirmation_id,
-                decision_event_id=request.event_id,
-                occurred_at=datetime.now(timezone.utc),
-                tenant_id=row.tenant_id,
-                application_id=row.application_id,
-                user_id=row.user_id,
-                login=snapshot,
-            )
-            session.add(
-                OutboxRow(
-                    event_id=confirmation_id,
-                    channel=LOGIN_CONFIRMED_CHANNEL,
-                    payload=event.model_dump(mode="json"),
-                )
-            )
-            try:
-                session.commit()
-            except IntegrityError:  # a concurrent confirm won
-                session.rollback()
-                return unconfirmed
-            user_id = row.user_id
+        stored = self.journal.get(_decision_key(request.event_id))
+        if stored is None or stored["tenant_id"] != request.tenant_id:
+            raise UnknownDecision(request.event_id)
+        decision = DecisionMadeEvent.model_validate(stored)
+        if (
+            decision.login is None
+            or decision.simulated
+            or decision.login.login_successful is False
+            or decision.enforced_action not in (Action.REQUIRE_MFA, Action.REAUTHENTICATE)
+        ):
+            return unconfirmed
+        confirmation_id = uuid5(request.event_id, "login-confirmed")
+        snapshot = decision.login
+        event = LoginConfirmedEvent(
+            event_id=confirmation_id,
+            decision_event_id=request.event_id,
+            occurred_at=datetime.now(timezone.utc),
+            tenant_id=decision.tenant_id,
+            application_id=decision.application_id,
+            user_id=decision.user_id,
+            login=snapshot,
+        )
+        payload = event.model_dump(mode="json")
+        # Once: the confirmation id is derived from the decision's.
+        if self.journal.record(
+            f"confirmed:{confirmation_id}", payload, LOGIN_CONFIRMED_CHANNEL, payload
+        ) is not None:
+            return unconfirmed
+        user_id = decision.user_id
 
         if self.profile_write_mode == "sync":
             try:
@@ -315,13 +303,13 @@ class EvaluateService:
         except Exception:
             logger.exception("profile sync write failed user_id=%s", user_id)
 
-    def _persist(
+    def _record(
         self,
         request: RiskEvaluateRequest,
         response: RiskEvaluateResponse,
         features: FeatureVectorV1 | None,
     ) -> RiskEvaluateResponse | None:
-        """Record the decision and its outbox event; the prior decision on a replay."""
+        """Journal the decision and queue its event; the prior decision on a replay."""
         snapshot = LoginEventSnapshot(
             login_timestamp=request.timestamp,
             ip_address=request.ip_address,
@@ -352,67 +340,31 @@ class EvaluateService:
             features=features,
             login=snapshot,
         )
-        with self.session_factory() as session:
-            session.add(
-                DecisionRow(
-                    event_id=response.event_id,
-                    tenant_id=request.tenant_id,
-                    application_id=request.application_id,
-                    user_id=request.user_id,
-                    risk_score=response.risk_score,
-                    risk_level=response.risk_level.value,
-                    action=response.action.value,
-                    enforced_action=response.enforced_action.value,
-                    engine_mode=response.engine_mode.value,
-                    simulated=request.simulated,
-                    model_version=response.model_version,
-                    policy_version=response.policy_version,
-                    feature_schema_version=response.feature_schema_version,
-                    fallback=response.fallback,
-                    reasons=[r.model_dump() for r in response.reasons],
-                    features=features.model_dump() if features else None,
-                    login=snapshot.model_dump(mode="json"),
-                    scored_at=response.scored_at,
-                )
-            )
-            session.add(
-                OutboxRow(
-                    event_id=response.event_id,
-                    channel=DECISION_MADE_CHANNEL,
-                    payload=event.model_dump(mode="json"),
-                )
-            )
-            try:
-                session.commit()
-            except IntegrityError:
-                session.rollback()
-                existing = get_decision_by_event_id(session, request.event_id)
-                if existing is None:
-                    raise
-                return self._row_to_response(existing)
-        return None
-
-    @staticmethod
-    def _row_to_response(row: DecisionRow) -> RiskEvaluateResponse:
-        from rba_contracts.evaluate import Reason
-
-        scored_at = row.scored_at
-        if scored_at.tzinfo is None:
-            scored_at = scored_at.replace(tzinfo=timezone.utc)
-
-        reasons = [Reason.model_validate(r) for r in (row.reasons or [])]
-
-        return RiskEvaluateResponse(
-            event_id=row.event_id if isinstance(row.event_id, UUID) else UUID(str(row.event_id)),
-            risk_score=row.risk_score,
-            risk_level=RiskLevel(row.risk_level),
-            action=Action(row.action),
-            enforced_action=Action(row.enforced_action),
-            engine_mode=EngineMode(row.engine_mode),
-            reasons=reasons,
-            model_version=row.model_version,
-            policy_version=row.policy_version,
-            feature_schema_version=row.feature_schema_version,
-            fallback=row.fallback,
-            scored_at=scored_at,
+        payload = event.model_dump(mode="json")
+        prior = self.journal.record(
+            _decision_key(response.event_id), payload, DECISION_MADE_CHANNEL, payload
         )
+        if prior is None:
+            return None
+        return _event_to_response(DecisionMadeEvent.model_validate(prior))
+
+
+def _decision_key(event_id: UUID) -> str:
+    return f"decision:{event_id}"
+
+
+def _event_to_response(event: DecisionMadeEvent) -> RiskEvaluateResponse:
+    return RiskEvaluateResponse(
+        event_id=event.event_id,
+        risk_score=event.risk_score,
+        risk_level=event.risk_level,
+        action=event.action,
+        enforced_action=event.enforced_action,
+        engine_mode=event.engine_mode,
+        reasons=event.reasons,
+        model_version=event.model_version,
+        policy_version=event.policy_version,
+        feature_schema_version=event.feature_schema_version,
+        fallback=event.fallback,
+        scored_at=event.occurred_at,
+    )

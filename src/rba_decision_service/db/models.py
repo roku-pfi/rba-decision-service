@@ -1,11 +1,15 @@
-"""SQLAlchemy models: decisions, transactional outbox, tenant policies."""
+"""SQLAlchemy models: the decisions read model and tenant policies.
+
+The outbox is gone (ADR-0044): events leave through the Valkey journal, and the
+event-publisher fills ``decisions`` from it.
+"""
 
 from __future__ import annotations
 
 from datetime import datetime
 from uuid import UUID
 
-from sqlalchemy import Boolean, DateTime, Float, Index, String, Text, func, text
+from sqlalchemy import Boolean, DateTime, Float, String, func
 from sqlalchemy.dialects.postgresql import JSONB, UUID as PGUUID
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column
 from sqlalchemy.types import JSON, TypeDecorator, Uuid
@@ -65,32 +69,6 @@ class DecisionRow(Base):
     scored_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now(), nullable=False
-    )
-
-
-class OutboxRow(Base):
-    __tablename__ = "outbox"
-
-    id: Mapped[int] = mapped_column(primary_key=True, autoincrement=True)
-    event_id: Mapped[UUID] = mapped_column(GUID(), nullable=False, unique=True, index=True)
-    channel: Mapped[str] = mapped_column(String(128), nullable=False)
-    payload: Mapped[dict] = mapped_column(JSONType, nullable=False)
-    created_at: Mapped[datetime] = mapped_column(
-        DateTime(timezone=True), server_default=func.now(), nullable=False
-    )
-    published_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
-    # Reserved for Phase 4 publisher; unused in Phase 3.
-    last_error: Mapped[str | None] = mapped_column(Text, nullable=True)
-
-    # The publisher polls "unpublished, oldest first" every second; without
-    # this it scans every row ever written, and the table only grows.
-    __table_args__ = (
-        Index(
-            "ix_outbox_unpublished",
-            "id",
-            postgresql_where=text("published_at IS NULL"),
-            sqlite_where=text("published_at IS NULL"),
-        ),
     )
 
 

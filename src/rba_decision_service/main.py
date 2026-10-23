@@ -11,6 +11,7 @@ from uuid import UUID
 from fastapi import FastAPI, HTTPException, Query, Request
 from rba_contracts import (
     Action,
+    DecisionMadeEvent,
     DecisionListResponse,
     DecisionRecord,
     LoginConfirmRequest,
@@ -31,6 +32,7 @@ from sqlalchemy import select
 from rba_decision_service.db.models import DecisionRow
 from rba_decision_service.db.session import make_engine, make_session_factory
 from rba_decision_service.init import initialise
+from rba_decision_service.journal import InMemoryJournal, RedisJournal
 from rba_decision_service.policy.store import DbPolicyStore
 from rba_decision_service.profile.store import (
     InMemoryPopulationStore,
@@ -83,6 +85,20 @@ def _build_profiles(settings: Settings):
     return RedisProfileStore(settings.redis_url, settings.redis_key_prefix)
 
 
+def _build_journal(settings: Settings):
+    if settings.redis_url.startswith("memory://"):
+        return InMemoryJournal()
+    return RedisJournal(
+        settings.redis_url,
+        stream=settings.journal_stream,
+        ttl_seconds=settings.journal_ttl_seconds,
+    )
+
+
+def _event_to_record(event: DecisionMadeEvent) -> DecisionRecord:
+    return DecisionRecord.model_validate(event.model_dump())
+
+
 def _build_population(settings: Settings):
     if settings.redis_url.startswith("memory://"):
         return InMemoryPopulationStore()
@@ -112,6 +128,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         session_factory = make_session_factory(engine)
 
         policies = DbPolicyStore(session_factory, ttl_seconds=settings.policy_cache_seconds)
+        policies.refresh_in_background()
         scorer = None
         artifact = Path(settings.freeman_artifact_path)
         if artifact.is_file():
@@ -142,6 +159,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             population=_build_population(settings),
             scorer=scorer,
             policies=policies,
+            journal=_build_journal(settings),
             session_factory=session_factory,
             profile_write_mode=settings.profile_write_mode,
             failed_login_burst_threshold=settings.failed_login_burst_threshold,
@@ -213,10 +231,16 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         service: EvaluateService = request.app.state.evaluate_service
         with service.session_factory() as session:
             row = session.get(DecisionRow, event_id)
+        if row is not None:
+            record = _row_to_record(row)
+        else:
+            # Not in the read model yet (ADR-0044): the journal has it.
+            stored = service.journal.get(f"decision:{event_id}")
+            record = _event_to_record(DecisionMadeEvent.model_validate(stored)) if stored else None
         # Another tenant's event is indistinguishable from a missing one.
-        if row is None or row.tenant_id != tenant_id:
+        if record is None or record.tenant_id != tenant_id:
             raise HTTPException(status_code=404, detail="unknown event")
-        return _row_to_record(row)
+        return record
 
     @app.post("/risk/evaluate", response_model=RiskEvaluateResponse)
     def evaluate_risk(

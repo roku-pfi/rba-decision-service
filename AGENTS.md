@@ -23,7 +23,8 @@ src/rba_decision_service/
   config.py               # pydantic-settings
   scoring/freeman.py      # JSON artifact online scorer
   profile/store.py        # Redis + in-memory ProfileStore
-  db/                     # decisions + outbox (SQLAlchemy)
+  journal.py              # decision journal in Valkey: key + stream (ADR-0044)
+  db/                     # decisions read model + tenant policies (SQLAlchemy)
   policy/store.py         # tenant policies in Postgres + TTL cache + seed
   services/evaluate.py    # orchestration
 config/policies/*.yaml

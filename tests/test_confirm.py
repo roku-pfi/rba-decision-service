@@ -7,10 +7,9 @@ from uuid import uuid4
 import pytest
 from rba_contracts import LoginConfirmedEvent, LoginConfirmRequest, TenantPolicy
 from rba_contracts.events import LOGIN_CONFIRMED_CHANNEL
-from sqlalchemy import create_engine, select
+from sqlalchemy import create_engine
 from sqlalchemy.pool import StaticPool
 
-from rba_decision_service.db.models import OutboxRow
 from rba_decision_service.db.session import create_tables, make_session_factory
 from rba_decision_service.policy.store import StaticPolicies
 from rba_decision_service.profile.store import InMemoryProfileStore
@@ -42,11 +41,8 @@ def service(scorer) -> EvaluateService:  # noqa: F811
     )
 
 
-def _confirmations(service: EvaluateService) -> list[OutboxRow]:
-    with service.session_factory() as session:
-        return list(
-            session.scalars(select(OutboxRow).where(OutboxRow.channel == LOGIN_CONFIRMED_CHANNEL))
-        )
+def _confirmations(service: EvaluateService) -> list[dict]:
+    return [payload for channel, payload in service.journal.events if channel == LOGIN_CONFIRMED_CHANNEL]
 
 
 def test_an_allowed_login_is_learned_at_once(service):
@@ -73,8 +69,8 @@ def test_a_passed_step_up_is_learned_once(service):
     assert not service.confirm(req).confirmed  # once
     assert service.profiles.get("u3").login_count == 1
 
-    [row] = _confirmations(service)
-    event = LoginConfirmedEvent.model_validate(row.payload)
+    [payload] = _confirmations(service)
+    event = LoginConfirmedEvent.model_validate(payload)
     assert event.decision_event_id == d.event_id
     assert (event.user_id, event.login.country) == ("u3", "AR")
 

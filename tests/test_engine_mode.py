@@ -18,7 +18,6 @@ from sqlalchemy import create_engine
 from sqlalchemy.pool import StaticPool
 
 from _policies import policies_for_tests
-from rba_decision_service.db.models import DecisionRow, OutboxRow
 from rba_decision_service.db.session import create_tables, make_session_factory
 from rba_decision_service.profile.store import InMemoryProfileStore
 from rba_decision_service.scoring.hierarchical import load_scorer
@@ -83,15 +82,13 @@ def test_monitor_enforces_the_base_policy_and_records_the_verdict(freeman) -> No
     assert resp.engine_mode is EngineMode.MONITOR
     assert resp.enforced_action is Action.REQUIRE_MFA
 
-    with factory() as session:
-        row = session.get(DecisionRow, req.event_id)
-        outbox = session.query(OutboxRow).filter_by(event_id=req.event_id).one()
-    assert (row.action, row.enforced_action, row.engine_mode) == (
-        resp.action.value,
-        "REQUIRE_MFA",
-        "MONITOR",
+    [(_, payload)] = service.journal.events
+    event = DecisionMadeEvent.model_validate(payload)
+    assert (event.action, event.enforced_action, event.engine_mode) == (
+        resp.action,
+        Action.REQUIRE_MFA,
+        EngineMode.MONITOR,
     )
-    event = DecisionMadeEvent.model_validate(outbox.payload)
     assert (event.tenant_id, event.action, event.enforced_action) == (
         "roku-bank",
         resp.action,
@@ -142,5 +139,5 @@ def test_simulated_is_recorded(freeman) -> None:
     service, factory = _service(freeman)
     req = _req(simulated=True, country="JP", asn="2516")
     service.evaluate(req)
-    with factory() as session:
-        assert session.get(DecisionRow, req.event_id).simulated is True
+    [(_, payload)] = service.journal.events
+    assert payload["simulated"] is True

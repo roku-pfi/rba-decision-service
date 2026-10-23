@@ -11,6 +11,7 @@ from rba_contracts import RiskEvaluateRequest
 
 from rba_decision_service.config import Settings
 from rba_decision_service.main import create_app
+from _journal import drain
 
 ROOT = Path(__file__).resolve().parents[1]
 ARTIFACT = ROOT / "artifacts" / "freeman-0.4.0.json"
@@ -52,12 +53,21 @@ def _client() -> TestClient:
     return TestClient(create_app(settings))
 
 
+def _publish(client: TestClient) -> None:
+    """What the event-publisher does in a deployment: fill the read model."""
+    service = client.app.state.evaluate_service
+    drain(service.journal, service.session_factory)
+
+
 def test_list_decisions_after_evaluate() -> None:
     with _client() as client:
         assert client.get("/decisions", params=BANK).json() == {"items": [], "count": 0}
         req = _req()
         scored = client.post("/risk/evaluate", json=req.model_dump(mode="json"))
         assert scored.status_code == 200, scored.text
+        # The detail page has it before the read model does.
+        assert client.get(f"/decisions/{req.event_id}", params=BANK).status_code == 200
+        _publish(client)
         listed = client.get("/decisions", params=BANK)
         assert listed.status_code == 200
         body = listed.json()
@@ -85,6 +95,7 @@ def test_list_decisions_filters_and_unknown() -> None:
         b = _req(user_id="usr-b")
         client.post("/risk/evaluate", json=a.model_dump(mode="json"))
         client.post("/risk/evaluate", json=b.model_dump(mode="json"))
+        _publish(client)
         only_a = client.get("/decisions", params={**BANK, "user_id": "usr-a"})
         assert only_a.json()["count"] == 1
         assert only_a.json()["items"][0]["user_id"] == "usr-a"
@@ -99,6 +110,7 @@ def test_decision_reads_are_scoped_to_one_tenant() -> None:
         kaze = _req(user_id="usr-kaze", tenant_id="kaze-labs", application_id="kaze-portal")
         for req in (bank, kaze):
             assert client.post("/risk/evaluate", json=req.model_dump(mode="json")).status_code == 200
+        _publish(client)
         listed = client.get("/decisions", params=BANK).json()
         assert [i["user_id"] for i in listed["items"]] == ["usr-bank"]
         # Kaze's event, asked for as Roku Bank: indistinguishable from a missing one.

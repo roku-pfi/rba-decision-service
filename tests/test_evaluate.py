@@ -16,8 +16,6 @@ from sqlalchemy.pool import StaticPool
 from rba_decision_service.config import Settings
 from rba_decision_service.db.session import (
     create_tables,
-    get_decision_by_event_id,
-    get_outbox_by_event_id,
     make_engine,
     make_session_factory,
 )
@@ -117,9 +115,9 @@ def test_idempotent_event_id(service: EvaluateService):
     second = service.evaluate(req)
     assert first.model_dump() == second.model_dump()
 
-    with service.session_factory() as session:
-        assert get_decision_by_event_id(session, req.event_id) is not None
-        assert get_outbox_by_event_id(session, req.event_id) is not None
+    # Journalled and queued once (ADR-0044).
+    assert service.journal.get(f"decision:{req.event_id}") is not None
+    assert [p["event_id"] for _, p in service.journal.events] == [str(req.event_id)]
 
 
 def test_profile_updates_lower_novelty_on_repeat(service: EvaluateService):
