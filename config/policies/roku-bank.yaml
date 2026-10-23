@@ -2,7 +2,7 @@
 # every login — with the engine watching (ADR-0034). The operator reads the
 # "prompts the engine would have saved" figure, then switches engine_mode to ACTIVE.
 tenant_id: roku-bank
-policy_version: "2.0.0"
+policy_version: "2.1.0"
 base_policy: ALWAYS_MFA
 engine_mode: MONITOR
 # High-sensitivity bands (were the demo-banking-app override in policy 1.0.0).
@@ -15,6 +15,8 @@ level_to_action:
   LOW: ALLOW
   MEDIUM: REQUIRE_MFA
   HIGH: REAUTHENTICATE
-  CRITICAL: BLOCK
+  # D-2: a score block stops no takeover a passkey would not, and locks out a
+  # real customer abroad. Blocks come from the failed-login rules.
+  CRITICAL: REAUTHENTICATE
 # Prefer a challenge over a silent allow when the scorer or profile store fails.
 fallback_action: REQUIRE_MFA

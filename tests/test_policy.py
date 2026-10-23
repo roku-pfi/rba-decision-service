@@ -56,7 +56,7 @@ def test_put_policy_rejects_bad_bands_and_mismatched_tenant(tmp_path) -> None:
             {"max": 1.0, "level": "CRITICAL"},
         ]
         assert client.put("/tenants/roku-bank/policy", json=body).status_code == 422
-        assert client.get("/tenants/roku-bank/policy").json()["policy_version"] == "2.0.0"
+        assert client.get("/tenants/roku-bank/policy").json()["policy_version"] == "2.1.0"
 
 
 class _Clock:
