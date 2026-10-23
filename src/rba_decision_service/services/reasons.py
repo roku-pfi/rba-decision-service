@@ -8,10 +8,13 @@ exactly one place. ``EvaluateService`` applies the floor via
 
 from __future__ import annotations
 
+from rba_contracts import LockoutPolicy
 from rba_contracts.enums import Action
 from rba_contracts.evaluate import Reason
 from rba_contracts.model import SignalContribution
 from rba_features.travel import SPEED_KMH_THRESHOLD, TravelSignals
+
+from rba_decision_service.guard import GuardState
 
 
 def reasons_from_contributions(
@@ -41,49 +44,54 @@ def reasons_from_contributions(
     return out
 
 
-def failed_login_signal(
-    failed_24h: int,
-    *,
-    burst_threshold: int,
-    lockout_threshold: int,
-) -> tuple[Reason, Action] | None:
-    """Repeated failures on this account → (reason, action floor). None below burst.
+def guard_signals(state: GuardState, policy: LockoutPolicy) -> list[tuple[Reason, Action]]:
+    """Repeated wrong passwords → (reason, action floor) pairs (ADR-0045).
 
-    Two bands (ADR-0027). A *burst* is the credential-stuffing signature: enough
-    wrong passwords that a password alone should no longer be sufficient, so the
-    floor is ``REAUTHENTICATE``. A *lockout* is a sustained run against one
-    account, where the honest answer is to stop serving it — floor ``BLOCK``.
-
-    Freeman cannot see this: it models what is normal for a user, and a failed
+    Freeman cannot see these: it models what is normal for a user, and a failed
     attempt from the attacker's device looks like an ordinary novel login.
     """
-    if failed_24h >= lockout_threshold:
-        return (
+    out: list[tuple[Reason, Action]] = []
+    if state.ip_blocked:
+        out.append((
             Reason(
-                code="failed_login_lockout",
-                signal="failed_logins_last_24h",
-                contribution=float(failed_24h),
+                code="source_blocked",
+                signal="ip_address",
                 detail=(
-                    f"{failed_24h} failed logins in the last 24h "
-                    f"(lockout threshold {lockout_threshold})"
+                    f"this IP passed {policy.ip_failures} failed logins in "
+                    f"{policy.ip_window_seconds // 60} min; blocked for "
+                    f"{policy.ip_block_seconds // 60} min"
                 ),
             ),
             Action.BLOCK,
-        )
-    if failed_24h >= burst_threshold:
-        return (
+        ))
+    if state.account_paused:
+        out.append((
+            Reason(
+                code="account_cooldown",
+                signal="failed_logins_own",
+                detail=(
+                    f"{policy.owner_failures} wrong passwords from the user's own network; "
+                    f"paused for {policy.owner_cooldown_seconds // 60} min"
+                ),
+            ),
+            Action.BLOCK,
+        ))
+    if state.foreign_failures >= policy.foreign_failures_step_up:
+        # Kept as failed_login_burst: same meaning for the console, now counted
+        # only from contexts the user has never used.
+        out.append((
             Reason(
                 code="failed_login_burst",
                 signal="failed_logins_last_24h",
-                contribution=float(failed_24h),
+                contribution=float(state.foreign_failures),
                 detail=(
-                    f"{failed_24h} failed logins in the last 24h "
-                    f"(burst threshold {burst_threshold})"
+                    f"{state.foreign_failures} failed logins in the last 24h "
+                    f"from unfamiliar contexts (threshold {policy.foreign_failures_step_up})"
                 ),
             ),
             Action.REAUTHENTICATE,
-        )
-    return None
+        ))
+    return out
 
 
 def supervised_reason(

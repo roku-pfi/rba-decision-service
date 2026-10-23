@@ -18,6 +18,7 @@ from rba_contracts import (
     LoginEventSnapshot,
     RiskEvaluateRequest,
     RiskEvaluateResponse,
+    TenantPolicy,
     apply_policy,
     enforced_action,
 )
@@ -29,6 +30,7 @@ from rba_features.profile import ProfileState
 from rba_features.travel import TravelSignals, compute_travel
 from sqlalchemy.orm import Session, sessionmaker
 
+from rba_decision_service.guard import GuardState, InMemoryGuard, LoginGuard
 from rba_decision_service.journal import DecisionJournal, InMemoryJournal
 from rba_decision_service.metrics import stage
 from rba_decision_service.policy.store import PolicySource
@@ -38,7 +40,7 @@ from rba_decision_service.scoring.freeman import FreemanOnlineScorer
 from rba_decision_service.scoring.logreg import LogRegOnlineScorer, SupervisedPrediction
 from rba_decision_service.services.escalate import escalate
 from rba_decision_service.services.reasons import (
-    failed_login_signal,
+    guard_signals,
     maybe_low_history,
     reasons_from_contributions,
     supervised_reason,
@@ -71,8 +73,7 @@ class EvaluateService:
         journal: DecisionJournal | None = None,
         session_factory: sessionmaker[Session] | None = None,
         profile_write_mode: str = "sync",
-        failed_login_burst_threshold: int = 3,
-        failed_login_lockout_threshold: int = 10,
+        guard: LoginGuard | None = None,
         supervised: LogRegOnlineScorer | None = None,
         fallback_risk_score: float = 0.0,
         population: PopulationStore | None = None,
@@ -85,8 +86,7 @@ class EvaluateService:
         # Reads of the decisions read model only (main.py); never on evaluate.
         self.session_factory = session_factory
         self.profile_write_mode = profile_write_mode
-        self.failed_login_burst_threshold = failed_login_burst_threshold
-        self.failed_login_lockout_threshold = failed_login_lockout_threshold
+        self.guard = guard if guard is not None else InMemoryGuard()
         self.supervised = supervised
         self.fallback_risk_score = fallback_risk_score
 
@@ -105,7 +105,6 @@ class EvaluateService:
         reasons = []
         risk_score = self.fallback_risk_score
         travel: TravelSignals | None = None
-        failed_login: tuple[Any, Action] | None = None
         supervised: SupervisedPrediction | None = None
 
         try:
@@ -126,11 +125,6 @@ class EvaluateService:
             model_version = prediction.model_version
             feature_schema_version = prediction.feature_schema_version
             reasons = reasons_from_contributions(prediction.contributions)
-            failed_login = failed_login_signal(
-                int(features_dict["failed_logins_last_24h"]),
-                burst_threshold=self.failed_login_burst_threshold,
-                lockout_threshold=self.failed_login_lockout_threshold,
-            )
             if self.supervised is not None:
                 supervised = self.supervised.predict(features_dict)
             low = maybe_low_history(int(features_dict["user_login_count"]))
@@ -152,6 +146,16 @@ class EvaluateService:
                 }
             ]
 
+        now = request.timestamp.timestamp()
+        guard_state: GuardState | None = None
+        with stage("guard"):
+            try:
+                guard_state = self.guard.check(
+                    request.tenant_id, request.ip_address, request.user_id, now
+                )
+            except Exception:
+                logger.warning("login guard unavailable event_id=%s", request.event_id)
+
         level, action = apply_policy(risk_score, policy, fallback=fallback)
 
         # Normalise reasons if fallback produced raw dicts.
@@ -163,14 +167,15 @@ class EvaluateService:
 
         # Rules and the supervised second opinion may only raise the action
         # (services/escalate). `risk_score` stays Freeman's number either way.
-        if not fallback:
-            rule_reasons: list[Reason] = []
-
-            if failed_login is not None:
-                reason, floor = failed_login
+        rule_reasons: list[Reason] = []
+        # Blocks and the step-up after an attack apply even when the scorer
+        # fell back: they come from counters, not from the model (ADR-0045).
+        if guard_state is not None:
+            for reason, floor in guard_signals(guard_state, policy.lockout):
                 rule_reasons.append(reason)
                 action = escalate(action, floor)
 
+        if not fallback:
             if travel is not None:
                 rule_reasons.extend(travel_reasons(travel))
                 if travel.impossible_travel or travel.vpn_or_hosting:
@@ -184,7 +189,7 @@ class EvaluateService:
                 )
                 action = escalate(action, Action.REQUIRE_MFA)
 
-            reason_models = rule_reasons + reason_models
+        reason_models = rule_reasons + reason_models
 
         # ADR-0034. `action` is now the engine's final verdict and is recorded
         # whatever the mode. What the PEP enforces depends on the tenant: the
@@ -212,6 +217,9 @@ class EvaluateService:
         feature_model = (
             FeatureVectorV1.model_validate(features_dict) if features_dict else None
         )
+        if not request.login_successful:
+            self._record_failure(request, features_dict, policy)
+
         # Idempotent replay: the event_id keys the journal, so a replay gets the
         # prior decision back instead of a second record (ADR-0044).
         with stage("journal"):
@@ -279,6 +287,35 @@ class EvaluateService:
             else:
                 self._learn_sync(user_id, snapshot.to_feature_event(), profile)
         return LoginConfirmResponse(event_id=request.event_id, confirmed=True)
+
+    def _record_failure(
+        self,
+        request: RiskEvaluateRequest,
+        features: dict[str, Any] | None,
+        policy: TenantPolicy,
+    ) -> None:
+        """Count a wrong password against its source and, by context, its account.
+
+        Familiar means a network the user has logged in from (IP or ASN). Without
+        features (scorer fallback) it counts as foreign: a step-up, never a pause.
+        The event id is the member, so a replay does not count twice.
+        """
+        familiar = bool(features) and bool(
+            features.get("ip_seen_before") or features.get("asn_seen_before")
+        )
+        with stage("guard"):
+            try:
+                self.guard.record_failure(
+                    request.tenant_id,
+                    request.ip_address,
+                    request.user_id,
+                    familiar=familiar,
+                    now=request.timestamp.timestamp(),
+                    policy=policy.lockout,
+                    member=str(request.event_id),
+                )
+            except Exception:
+                logger.warning("failed login not counted event_id=%s", request.event_id)
 
     def _population_for(self, event: dict[str, Any]) -> PopulationCounts | None:
         """The deployment's counts for this login's values (ADR-0042).

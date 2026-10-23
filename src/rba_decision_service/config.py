@@ -60,9 +60,8 @@ class Settings(BaseSettings):
     )
     supervised_escalation_enabled: bool = True
 
-    # Failed logins in the last 24h at/above these → REAUTHENTICATE, then BLOCK.
-    failed_login_burst_threshold: int = 3
-    failed_login_lockout_threshold: int = 10
+    # Repeated wrong passwords are per-tenant policy now (TenantPolicy.lockout,
+    # ADR-0045).
 
 
 @lru_cache

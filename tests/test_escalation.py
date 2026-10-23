@@ -1,4 +1,4 @@
-"""Escalation ladder: failed-login bands (ADR-0027) and the supervised second opinion.
+"""Escalation ladder and the supervised second opinion (failed logins: test_guard.py).
 
 Both are escalate-only. The assertions that matter are the negative ones: a rule
 may raise an action, never lower it, and never rewrite ``risk_score``.
@@ -24,7 +24,6 @@ from rba_decision_service.scoring.hierarchical import load_scorer
 from rba_decision_service.scoring.logreg import LogRegOnlineScorer
 from rba_decision_service.services.escalate import escalate
 from rba_decision_service.services.evaluate import EvaluateService
-from rba_decision_service.services.reasons import failed_login_signal
 
 ROOT = Path(__file__).resolve().parents[1]
 FREEMAN = ROOT / "artifacts" / "freeman-0.4.0.json"
@@ -126,65 +125,6 @@ def test_escalate_takes_the_more_severe_action():
 def test_escalate_never_lowers_an_action():
     assert escalate(Action.BLOCK, Action.ALLOW) is Action.BLOCK
     assert escalate(Action.REAUTHENTICATE, Action.REQUIRE_MFA) is Action.REAUTHENTICATE
-
-
-# ------------------------------------------------------- failed-login bands
-
-
-def test_failed_login_bands():
-    assert failed_login_signal(2, burst_threshold=3, lockout_threshold=10) is None
-
-    reason, floor = failed_login_signal(3, burst_threshold=3, lockout_threshold=10)
-    assert reason.code == "failed_login_burst"
-    assert floor is Action.REAUTHENTICATE
-
-    reason, floor = failed_login_signal(10, burst_threshold=3, lockout_threshold=10)
-    assert reason.code == "failed_login_lockout"
-    assert floor is Action.BLOCK
-
-
-def test_quiet_account_is_not_escalated(freeman):
-    service = _service(freeman)
-    uid = "user-quiet"
-    service.profiles.put(uid, _home_profile(failures=0))
-    resp = service.evaluate(_req(user_id=uid))
-    codes = [r.code for r in resp.reasons]
-    assert "failed_login_burst" not in codes
-    assert "failed_login_lockout" not in codes
-    assert resp.action is Action.ALLOW
-
-
-def test_failed_login_burst_escalates_to_reauthenticate(freeman):
-    service = _service(freeman)
-    uid = "user-burst"
-    service.profiles.put(uid, _home_profile(failures=4))
-    resp = service.evaluate(_req(user_id=uid))
-    assert resp.action is Action.REAUTHENTICATE
-    assert resp.reasons[0].code == "failed_login_burst"
-    assert resp.reasons[0].contribution == 4.0
-
-
-def test_failed_login_lockout_escalates_to_block(freeman):
-    service = _service(freeman)
-    uid = "user-lockout"
-    service.profiles.put(uid, _home_profile(failures=12))
-    resp = service.evaluate(_req(user_id=uid))
-    assert resp.action is Action.BLOCK
-    assert resp.reasons[0].code == "failed_login_lockout"
-
-
-def test_failures_outside_the_window_do_not_count(freeman):
-    """The feature is last-24h; older failures must not keep an account locked out."""
-    service = _service(freeman)
-    uid = "user-old-failures"
-    profile = _home_profile(failures=0)
-    stale = T0.timestamp() - 48 * 3600
-    profile.failed_login_ts = [stale + 60 * i for i in range(12)]
-    service.profiles.put(uid, profile)
-    resp = service.evaluate(_req(user_id=uid))
-    codes = [r.code for r in resp.reasons]
-    assert "failed_login_lockout" not in codes
-    assert resp.action is Action.ALLOW
 
 
 # ------------------------------------------------------ supervised opinion
@@ -306,8 +246,10 @@ def test_supervised_escalates_allow_to_mfa(freeman, supervised):
 def test_supervised_never_lowers_a_block(freeman, supervised):
     service = _service(freeman, supervised)
     uid = "user-block-stays"
-    service.profiles.put(uid, _home_profile(failures=12))
-    resp = service.evaluate(_req(user_id=uid))
+    service.profiles.put(uid, _home_profile())
+    for i in range(5):  # the owner's own wrong passwords pause the account (ADR-0045)
+        service.evaluate(_req(user_id=uid, login_successful=False, timestamp=T0 + timedelta(minutes=i)))
+    resp = service.evaluate(_req(user_id=uid, timestamp=T0 + timedelta(minutes=6)))
     assert resp.action is Action.BLOCK
 
 

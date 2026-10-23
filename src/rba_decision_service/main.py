@@ -31,6 +31,7 @@ from sqlalchemy import select
 
 from rba_decision_service.db.models import DecisionRow
 from rba_decision_service.db.session import make_engine, make_session_factory
+from rba_decision_service.guard import InMemoryGuard, RedisGuard
 from rba_decision_service.init import initialise
 from rba_decision_service.journal import InMemoryJournal, RedisJournal
 from rba_decision_service.policy.store import DbPolicyStore
@@ -99,6 +100,12 @@ def _event_to_record(event: DecisionMadeEvent) -> DecisionRecord:
     return DecisionRecord.model_validate(event.model_dump())
 
 
+def _build_guard(settings: Settings):
+    if settings.redis_url.startswith("memory://"):
+        return InMemoryGuard()
+    return RedisGuard(settings.redis_url)
+
+
 def _build_population(settings: Settings):
     if settings.redis_url.startswith("memory://"):
         return InMemoryPopulationStore()
@@ -162,8 +169,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             journal=_build_journal(settings),
             session_factory=session_factory,
             profile_write_mode=settings.profile_write_mode,
-            failed_login_burst_threshold=settings.failed_login_burst_threshold,
-            failed_login_lockout_threshold=settings.failed_login_lockout_threshold,
+            guard=_build_guard(settings),
             supervised=supervised,
         )
         yield
