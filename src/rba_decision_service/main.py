@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import logging
 from contextlib import asynccontextmanager
-from datetime import timezone
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from uuid import UUID
 
@@ -12,6 +12,7 @@ from fastapi import FastAPI, HTTPException, Query, Request
 from rba_contracts import (
     Action,
     DecisionMadeEvent,
+    DecisionSummary,
     DecisionListResponse,
     DecisionRecord,
     LoginConfirmRequest,
@@ -31,6 +32,7 @@ from sqlalchemy import select
 
 from rba_decision_service.db.models import DecisionRow
 from rba_decision_service.db.session import make_engine, make_session_factory
+from rba_decision_service.db.summary import summarize
 from rba_decision_service.guard import InMemoryGuard, RedisGuard
 from rba_decision_service.init import initialise
 from rba_decision_service.journal import InMemoryJournal, RedisJournal
@@ -238,6 +240,16 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             rows = list(session.scalars(stmt))
         items = [_row_to_record(row) for row in rows]
         return DecisionListResponse(items=items, count=len(items))
+
+    @app.get("/decisions/summary", response_model=DecisionSummary)
+    def summarize_decisions(
+        request: Request, tenant_id: str, days: int = Query(default=7, ge=1, le=31)
+    ) -> DecisionSummary:
+        """The console's Resumen, counted in the store (ADR-0033: one tenant)."""
+        service: EvaluateService = request.app.state.evaluate_service
+        since = datetime.now(timezone.utc) - timedelta(days=days)
+        with service.session_factory() as session:
+            return summarize(session, tenant_id, since)
 
     @app.get("/decisions/{event_id}", response_model=DecisionRecord)
     def get_decision(event_id: UUID, tenant_id: str, request: Request) -> DecisionRecord:

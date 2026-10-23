@@ -139,3 +139,21 @@ def test_a_passed_step_up_shows_on_the_record() -> None:
         assert confirmed.json()["confirmed"] is True
         _publish(client)
         assert client.get(f"/decisions/{req.event_id}", params=BANK).json()["step_up_passed_at"]
+
+
+def test_the_summary_counts_in_the_store() -> None:
+    """Resumen: counted by the PDP, not from the newest 200 records."""
+    with _client() as client:
+        now = datetime.now(timezone.utc)
+        for i in range(3):
+            client.post("/risk/evaluate", json=_req(user_id=f"usr-sum-{i}", timestamp=now).model_dump(mode="json"))
+        client.post("/risk/evaluate", json=_req(
+            user_id="usr-kaze", tenant_id="kaze-labs", application_id="kaze-portal", timestamp=now,
+        ).model_dump(mode="json"))
+        _publish(client)
+        body = client.get("/decisions/summary", params=BANK).json()
+        assert body["total"] == 3  # Kaze's decision is not Roku Bank's
+        assert sum(body["by_action"].values()) == 3
+        assert sum(sum(h["counts"].values()) for h in body["hours"]) == 3
+        assert body["countries"] == [{"country": "AR", "count": 3}]
+        assert client.get("/decisions/summary").status_code == 422  # tenant is mandatory
