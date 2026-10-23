@@ -8,6 +8,8 @@ module-level and registered once per process.
 from __future__ import annotations
 
 import time
+from collections.abc import Iterator
+from contextlib import contextmanager
 
 from prometheus_client import CONTENT_TYPE_LATEST, Counter, Histogram, generate_latest
 from rba_contracts import RiskEvaluateResponse
@@ -34,6 +36,23 @@ RISK_SCORE = Histogram(
     "Risk score emitted by POST /risk/evaluate",
     buckets=(0.1, 0.2, 0.3, 0.4, 0.5, 0.6, 0.7, 0.8, 0.9, 1.0),
 )
+
+EVALUATE_STAGE = Histogram(
+    "rba_evaluate_stage_seconds",
+    "Time inside POST /risk/evaluate by step, to find where a slow decision waits",
+    labelnames=("stage",),
+    buckets=(0.001, 0.005, 0.01, 0.025, 0.05, 0.1, 0.2, 0.5, 1.0, 2.5, 5.0),
+)
+
+
+@contextmanager
+def stage(name: str) -> Iterator[None]:
+    t0 = time.perf_counter()
+    try:
+        yield
+    finally:
+        EVALUATE_STAGE.labels(stage=name).observe(time.perf_counter() - t0)
+
 
 _SKIP_HTTP = frozenset({"/metrics", "/healthz"})
 

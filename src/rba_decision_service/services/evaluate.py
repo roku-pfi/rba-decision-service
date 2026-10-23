@@ -33,6 +33,7 @@ from sqlalchemy.orm import Session, sessionmaker
 
 from rba_decision_service.db.models import DecisionRow, OutboxRow
 from rba_decision_service.db.session import get_decision_by_event_id
+from rba_decision_service.metrics import stage
 from rba_decision_service.policy.store import PolicySource
 from rba_decision_service.profile.store import PopulationStore, ProfileStore
 from rba_decision_service.scoring.hierarchical import HierarchicalScorer
@@ -91,12 +92,13 @@ class EvaluateService:
 
     def evaluate(self, request: RiskEvaluateRequest) -> RiskEvaluateResponse:
         # Idempotent replay: same event_id → prior decision.
-        with self.session_factory() as session:
+        with stage("replay_check"), self.session_factory() as session:
             existing = get_decision_by_event_id(session, request.event_id)
             if existing is not None:
                 return self._row_to_response(existing)
 
-        policy = self.policies.get(request.tenant_id)
+        with stage("policy"):
+            policy = self.policies.get(request.tenant_id)
         if policy is None:
             raise UnknownTenant(request.tenant_id)
 
@@ -113,7 +115,8 @@ class EvaluateService:
         supervised: SupervisedPrediction | None = None
 
         try:
-            profile = self.profiles.get(request.user_id)
+            with stage("profile_read"):
+                profile = self.profiles.get(request.user_id)
             event = request.to_feature_event()
             features_dict = compute_features(event, profile)
             travel = compute_travel(event, profile)
@@ -121,7 +124,10 @@ class EvaluateService:
             if self.scorer is None:
                 raise RuntimeError("scorer not loaded")
 
-            prediction = self.scorer.predict(event, profile, self._population_for(event))
+            with stage("population_read"):
+                population = self._population_for(event)
+            with stage("score"):
+                prediction = self.scorer.predict(event, profile, population)
             risk_score = prediction.risk_score
             model_version = prediction.model_version
             feature_schema_version = prediction.feature_schema_version
@@ -212,7 +218,8 @@ class EvaluateService:
         feature_model = (
             FeatureVectorV1.model_validate(features_dict) if features_dict else None
         )
-        self._persist(request, response, feature_model)
+        with stage("persist"):
+            self._persist(request, response, feature_model)
 
         # A presenter override is a demo prop, not where the user was (ADR-0032).
         if (
