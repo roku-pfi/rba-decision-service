@@ -22,6 +22,15 @@ def make_engine(url: str, *, echo: bool = False) -> Engine:
 def create_tables(engine: Engine) -> None:
     Base.metadata.create_all(engine)
     _add_nullable_columns(engine)
+    _add_indexes(engine)
+
+
+def _add_indexes(engine: Engine) -> None:
+    """Create indexes added to tables that already exist (create_all skips them)."""
+    with engine.begin() as conn:
+        for table in Base.metadata.sorted_tables:
+            for index in table.indexes:
+                index.create(conn, checkfirst=True)
 
 
 def _add_nullable_columns(engine: Engine) -> None:

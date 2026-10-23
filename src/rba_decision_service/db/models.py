@@ -5,7 +5,7 @@ from __future__ import annotations
 from datetime import datetime
 from uuid import UUID
 
-from sqlalchemy import Boolean, DateTime, Float, String, Text, func
+from sqlalchemy import Boolean, DateTime, Float, Index, String, Text, func, text
 from sqlalchemy.dialects.postgresql import JSONB, UUID as PGUUID
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column
 from sqlalchemy.types import JSON, TypeDecorator, Uuid
@@ -81,6 +81,17 @@ class OutboxRow(Base):
     published_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     # Reserved for Phase 4 publisher; unused in Phase 3.
     last_error: Mapped[str | None] = mapped_column(Text, nullable=True)
+
+    # The publisher polls "unpublished, oldest first" every second; without
+    # this it scans every row ever written, and the table only grows.
+    __table_args__ = (
+        Index(
+            "ix_outbox_unpublished",
+            "id",
+            postgresql_where=text("published_at IS NULL"),
+            sqlite_where=text("published_at IS NULL"),
+        ),
+    )
 
 
 class TenantPolicyRow(Base):
