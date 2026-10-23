@@ -27,7 +27,7 @@ from rba_features.features import compute_features, learn_at_decision, update_pr
 from rba_features.population import PopulationCounts, hier_read_fields, population_fields
 from rba_features.profile import ProfileState
 from rba_features.travel import TravelSignals, compute_travel
-from sqlalchemy import select
+from sqlalchemy import select, text
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session, sessionmaker
 
@@ -353,6 +353,11 @@ class EvaluateService:
             login=snapshot,
         )
         with self.session_factory() as session:
+            if session.get_bind().dialect.name == "postgresql":
+                # Don't wait for the WAL flush: on a small RDS that wait was the
+                # whole p95 tail. A database crash can lose the last fraction of
+                # a second of decisions (and their events); a stopped PDP cannot.
+                session.execute(text("SET LOCAL synchronous_commit TO OFF"))
             session.add(
                 DecisionRow(
                     event_id=response.event_id,
