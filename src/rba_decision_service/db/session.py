@@ -12,11 +12,13 @@ from sqlalchemy.orm import Session, sessionmaker
 from rba_decision_service.db.models import Base, DecisionRow, OutboxRow
 
 
-def make_engine(url: str, *, echo: bool = False) -> Engine:
-    connect_args = {}
+def make_engine(url: str, *, echo: bool = False, pool_size: int | None = None) -> Engine:
     if url.startswith("sqlite"):
-        connect_args["check_same_thread"] = False
-    return create_engine(url, echo=echo, future=True, connect_args=connect_args)
+        return create_engine(
+            url, echo=echo, future=True, connect_args={"check_same_thread": False}
+        )
+    pool = {} if pool_size is None else {"pool_size": pool_size, "max_overflow": 0}
+    return create_engine(url, echo=echo, future=True, pool_pre_ping=True, **pool)
 
 
 def create_tables(engine: Engine) -> None:

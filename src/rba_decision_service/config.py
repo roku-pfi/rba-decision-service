@@ -30,6 +30,11 @@ class Settings(BaseSettings):
     database_url: str = (
         "postgresql+psycopg://rba:rba@localhost:5432/rba_decision"
     )
+    # Kept connections per replica, no overflow: an overflow connection is
+    # closed after each use, so under load every request paid a TLS + SCRAM
+    # handshake and waited behind the cap (p99 2-5 s on a trivial SELECT).
+    # 5 replicas x 10 stay under a db.t4g.micro's 79 connections.
+    db_pool_size: int = 10
     # When true, use in-memory SQLite (unit tests / no Docker).
     use_memory_db: bool = False
     # C-4: create tables and seed policies at startup (compose, k3d, tests).

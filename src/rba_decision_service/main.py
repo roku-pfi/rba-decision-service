@@ -106,7 +106,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                 future=True,
             )
         else:
-            engine = make_engine(settings.database_url)
+            engine = make_engine(settings.database_url, pool_size=settings.db_pool_size)
         if settings.init_on_startup:
             initialise(settings, engine)
         session_factory = make_session_factory(engine)
