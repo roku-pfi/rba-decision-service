@@ -18,7 +18,8 @@ HTTP_REQUEST_DURATION = Histogram(
     "http_request_duration_seconds",
     "HTTP request latency",
     labelnames=("method", "handler", "status"),
-    buckets=(0.005, 0.01, 0.025, 0.05, 0.1, 0.25, 0.5, 1.0, 2.5),
+    # 0.2 is RNF-07's bound: the p95 is judged at a bucket edge, not interpolated.
+    buckets=(0.005, 0.01, 0.025, 0.05, 0.1, 0.15, 0.2, 0.25, 0.5, 1.0, 2.5),
 )
 
 DECISIONS_TOTAL = Counter(
