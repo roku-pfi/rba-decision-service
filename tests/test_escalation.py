@@ -20,24 +20,24 @@ from sqlalchemy.pool import StaticPool
 from rba_decision_service.db.session import create_tables, make_session_factory
 from _policies import policies_for_tests
 from rba_decision_service.profile.store import InMemoryProfileStore
-from rba_decision_service.scoring.freeman import FreemanOnlineScorer
+from rba_decision_service.scoring.hierarchical import load_scorer
 from rba_decision_service.scoring.logreg import LogRegOnlineScorer
 from rba_decision_service.services.escalate import escalate
 from rba_decision_service.services.evaluate import EvaluateService
 from rba_decision_service.services.reasons import failed_login_signal
 
 ROOT = Path(__file__).resolve().parents[1]
-FREEMAN = ROOT / "artifacts" / "freeman-0.3.0.json"
+FREEMAN = ROOT / "artifacts" / "freeman-0.4.0.json"
 LOGREG = ROOT / "artifacts" / "logreg-0.2.0.json"
 
 T0 = datetime(2020, 6, 1, 12, 0, tzinfo=timezone.utc)
 
 
 @pytest.fixture(scope="module")
-def freeman() -> FreemanOnlineScorer:
+def freeman():
     if not FREEMAN.is_file():
         pytest.skip(f"missing Freeman artifact at {FREEMAN}")
-    return FreemanOnlineScorer.from_path(FREEMAN)
+    return load_scorer(FREEMAN)
 
 
 @pytest.fixture(scope="module")

@@ -27,7 +27,7 @@ src/rba_decision_service/
   policy/store.py         # tenant policies in Postgres + TTL cache + seed
   services/evaluate.py    # orchestration
 config/policies/*.yaml
-artifacts/freeman-0.3.0.json
+artifacts/freeman-0.4.0.json
 tests/test_evaluate.py
 tests/test_policy.py
 tests/test_metrics.py

@@ -38,7 +38,8 @@ from rba_decision_service.profile.store import (
     RedisPopulationStore,
     RedisProfileStore,
 )
-from rba_decision_service.scoring.freeman import FreemanOnlineScorer
+from rba_decision_service.scoring.freeman import FreemanOnlineScorer  # noqa: F401
+from rba_decision_service.scoring.hierarchical import load_scorer
 from rba_decision_service.scoring.logreg import LogRegOnlineScorer
 from rba_decision_service.services.evaluate import (
     EvaluateService,
@@ -114,8 +115,8 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         scorer = None
         artifact = Path(settings.freeman_artifact_path)
         if artifact.is_file():
-            scorer = FreemanOnlineScorer.from_path(artifact)
-            logger.info("loaded Freeman artifact %s", artifact)
+            scorer = load_scorer(artifact)
+            logger.info("loaded Freeman artifact %s (%s)", artifact, scorer.artifact.model_version)
         else:
             logger.warning("Freeman artifact missing at %s — fallback mode only", artifact)
 

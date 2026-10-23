@@ -5,7 +5,7 @@ from __future__ import annotations
 import json
 from typing import Protocol
 
-from rba_features.population import TOTAL_FIELD, PopulationCounts
+from rba_features.population import TOTAL_FIELD, PopulationCounts, learn_population
 from rba_features.profile import ProfileState, profile_from_dict, profile_to_dict
 
 try:
@@ -63,7 +63,7 @@ class PopulationStore(Protocol):
 
     def get(self, fields: list[str]) -> PopulationCounts: ...
 
-    def add(self, fields: list[str]) -> None: ...
+    def learn(self, event: dict) -> None: ...
 
 
 class InMemoryPopulationStore:
@@ -76,9 +76,12 @@ class InMemoryPopulationStore:
             counts={f: self._data[f] for f in fields if f in self._data},
         )
 
-    def add(self, fields: list[str]) -> None:
-        for f in [*fields, TOTAL_FIELD]:
-            self._data[f] = self._data.get(f, 0) + 1
+    def learn(self, event: dict) -> None:
+        learn_population(event, self._hincrby)
+
+    def _hincrby(self, field: str, amount: int) -> int:
+        self._data[field] = self._data.get(field, 0) + amount
+        return self._data[field]
 
 
 class RedisPopulationStore:
@@ -98,8 +101,5 @@ class RedisPopulationStore:
             counts={f: int(v) for f, v in zip(fields, values) if v},
         )
 
-    def add(self, fields: list[str]) -> None:
-        pipe = self._client.pipeline(transaction=False)
-        for f in [*fields, TOTAL_FIELD]:
-            pipe.hincrby(self._key, f, 1)
-        pipe.execute()
+    def learn(self, event: dict) -> None:
+        learn_population(event, lambda field, amount: self._client.hincrby(self._key, field, amount))

@@ -44,7 +44,7 @@ class Settings(BaseSettings):
     # writes it.
     policy_cache_seconds: float = 5.0
     freeman_artifact_path: Path = Field(
-        default=_REPO_ROOT / "artifacts" / "freeman-0.3.0.json"
+        default=_REPO_ROOT / "artifacts" / "freeman-0.4.0.json"
     )
     # Supervised second opinion (ADR-0027). Missing file → Freeman only.
     logreg_artifact_path: Path = Field(

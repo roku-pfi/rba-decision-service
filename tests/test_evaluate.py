@@ -25,21 +25,29 @@ from rba_decision_service.main import create_app
 from _policies import policies_for_tests
 from rba_decision_service.profile.store import InMemoryProfileStore
 from rba_decision_service.scoring.freeman import FreemanOnlineScorer
+from rba_decision_service.scoring.hierarchical import HierarchicalScorer, load_scorer
 from rba_decision_service.services.evaluate import EvaluateService
 
 ROOT = Path(__file__).resolve().parents[1]
-ARTIFACT = ROOT / "artifacts" / "freeman-0.3.0.json"
+ARTIFACT = ROOT / "artifacts" / "freeman-0.4.0.json"
+# The flat scorer stays supported for 0.3.0 artifacts; its own tests use one.
+FLAT_ARTIFACT = ROOT / "artifacts" / "freeman-0.3.0.json"
 
 
 @pytest.fixture(scope="module")
-def scorer() -> FreemanOnlineScorer:
+def scorer():
     if not ARTIFACT.is_file():
         pytest.skip(f"missing Freeman artifact at {ARTIFACT}")
-    return FreemanOnlineScorer.from_path(ARTIFACT)
+    return load_scorer(ARTIFACT)
+
+
+@pytest.fixture(scope="module")
+def flat_scorer() -> FreemanOnlineScorer:
+    return FreemanOnlineScorer.from_path(FLAT_ARTIFACT)
 
 
 @pytest.fixture
-def service(scorer: FreemanOnlineScorer) -> EvaluateService:
+def service(scorer) -> EvaluateService:
     engine = make_engine(
         "sqlite+pysqlite://",
     )
@@ -81,7 +89,7 @@ def _req(**overrides) -> RiskEvaluateRequest:
     return RiskEvaluateRequest.model_validate(base)
 
 
-def test_healthz_and_evaluate_happy_path(scorer: FreemanOnlineScorer):
+def test_healthz_and_evaluate_happy_path(scorer):
     settings = Settings(
         use_memory_db=True,
         redis_url="memory://",
@@ -288,7 +296,8 @@ def test_missing_country_does_not_travel(service: EvaluateService):
     assert "vpn_or_hosting" not in codes
 
 
-def test_freeman_online_matches_ml_training_event_api(scorer: FreemanOnlineScorer):
+def test_freeman_online_matches_ml_training_event_api(flat_scorer: FreemanOnlineScorer):
+    scorer = flat_scorer
     """Serving path matches rba-ml-training FreemanScorer.score_event when pandas is available."""
     pandas = pytest.importorskip("pandas")
     del pandas
@@ -351,7 +360,8 @@ def test_freeman_online_matches_ml_training_event_api(scorer: FreemanOnlineScore
     )
 
 
-def test_freeman_contributions_sum_to_logrisk(scorer: FreemanOnlineScorer):
+def test_freeman_contributions_sum_to_logrisk(flat_scorer: FreemanOnlineScorer):
+    scorer = flat_scorer
     profile = ProfileState()
     event = {
         "login_timestamp": datetime(2020, 6, 1, 15, 0, tzinfo=timezone.utc),

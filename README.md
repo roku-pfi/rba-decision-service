@@ -59,7 +59,7 @@ src/rba_decision_service/
     ├── evaluate.py         # orchestration
     └── reasons.py          # contributions → Reason; burst / low-history
 config/policies/*.yaml      # seed policy per tenant (copied from contracts examples)
-artifacts/freeman-0.3.0.json
+artifacts/freeman-0.4.0.json
 tests/test_evaluate.py
 tests/test_policy.py
 tests/test_decisions.py
@@ -191,7 +191,7 @@ JSON only on the hot path (no pickle). Export from `rba-ml-training/`:
 ```bash
 python -m ml.export_freeman \
   --pickle artifacts/step5/freeman.pkl \
-  --out ../rba-decision-service/artifacts/freeman-0.3.0.json \
+  --out ../rba-decision-service/artifacts/freeman-0.4.0.json \
   --beta 5.0
 ```
 
@@ -243,7 +243,7 @@ Matches `../rba-contracts/examples/evaluate-request.json`.
 | `USE_MEMORY_DB` | `false` | sqlite StaticPool for tests |
 | `POLICY_SEED_DIR` | `config/policies` | seeds tenants with no policy row |
 | `POLICY_CACHE_SECONDS` | `5` | per-replica policy cache |
-| `FREEMAN_ARTIFACT_PATH` | `artifacts/freeman-0.3.0.json` | primary score + reasons |
+| `FREEMAN_ARTIFACT_PATH` | `artifacts/freeman-0.4.0.json` | primary score + reasons |
 | `LOGREG_ARTIFACT_PATH` | `artifacts/logreg-0.2.0.json` | second opinion; missing → Freeman only |
 | `SUPERVISED_ESCALATION_ENABLED` | `true` | `false` → Freeman only |
 | `PROFILE_WRITE_MODE` | `sync` | `none` when profile-service owns writes |

@@ -21,18 +21,18 @@ from _policies import policies_for_tests
 from rba_decision_service.db.models import DecisionRow, OutboxRow
 from rba_decision_service.db.session import create_tables, make_session_factory
 from rba_decision_service.profile.store import InMemoryProfileStore
-from rba_decision_service.scoring.freeman import FreemanOnlineScorer
+from rba_decision_service.scoring.hierarchical import load_scorer
 from rba_decision_service.services.evaluate import EvaluateService
 
 ROOT = Path(__file__).resolve().parents[1]
-FREEMAN = ROOT / "artifacts" / "freeman-0.3.0.json"
+FREEMAN = ROOT / "artifacts" / "freeman-0.4.0.json"
 
 
 @pytest.fixture(scope="module")
-def freeman() -> FreemanOnlineScorer:
+def freeman():
     if not FREEMAN.is_file():
         pytest.skip(f"missing Freeman artifact at {FREEMAN}")
-    return FreemanOnlineScorer.from_path(FREEMAN)
+    return load_scorer(FREEMAN)
 
 
 def _service(scorer, policies=None) -> tuple[EvaluateService, object]:

@@ -24,7 +24,7 @@ from rba_contracts import (
 from rba_contracts.enums import Action, EngineMode, RiskLevel
 from rba_contracts.events import DECISION_MADE_CHANNEL, LOGIN_CONFIRMED_CHANNEL
 from rba_features.features import compute_features, learn_at_decision, update_profile
-from rba_features.population import PopulationCounts, population_fields
+from rba_features.population import PopulationCounts, hier_read_fields, population_fields
 from rba_features.profile import ProfileState
 from rba_features.travel import TravelSignals, compute_travel
 from sqlalchemy import select
@@ -35,6 +35,7 @@ from rba_decision_service.db.models import DecisionRow, OutboxRow
 from rba_decision_service.db.session import get_decision_by_event_id
 from rba_decision_service.policy.store import PolicySource
 from rba_decision_service.profile.store import PopulationStore, ProfileStore
+from rba_decision_service.scoring.hierarchical import HierarchicalScorer
 from rba_decision_service.scoring.freeman import FreemanOnlineScorer
 from rba_decision_service.scoring.logreg import LogRegOnlineScorer, SupervisedPrediction
 from rba_decision_service.services.escalate import escalate
@@ -67,7 +68,7 @@ class EvaluateService:
         self,
         *,
         profiles: ProfileStore,
-        scorer: FreemanOnlineScorer | None,
+        scorer: FreemanOnlineScorer | HierarchicalScorer | None,
         policies: PolicySource,
         session_factory: sessionmaker[Session],
         profile_write_mode: str = "sync",
@@ -290,7 +291,7 @@ class EvaluateService:
         if self.population is None:
             return None
         try:
-            return self.population.get(population_fields(event))
+            return self.population.get([*population_fields(event), *hier_read_fields(event)])
         except Exception:
             logger.warning("population counts unavailable; training prior only")
             return None
@@ -300,7 +301,7 @@ class EvaluateService:
         try:
             self.profiles.put(user_id, updated)
             if self.population is not None and event.get("login_successful") is not False:
-                self.population.add(population_fields(event))
+                self.population.learn(event)
         except Exception:
             logger.exception("profile sync write failed user_id=%s", user_id)
 
