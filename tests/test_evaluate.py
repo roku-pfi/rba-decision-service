@@ -375,3 +375,31 @@ def test_freeman_contributions_sum_to_logrisk(flat_scorer: FreemanOnlineScorer):
         sum(c.contribution for c in pred.contributions), rel=1e-9, abs=1e-9
     )
     assert 0.0 <= pred.risk_score <= 1.0
+
+
+def test_population_is_per_tenant(scorer):
+    """ADR-0046: one tenant's learned logins never move another tenant's counts."""
+    from sqlalchemy import create_engine
+
+    from rba_decision_service.profile.store import InMemoryPopulationStore
+
+    engine = create_engine(
+        "sqlite+pysqlite://",
+        connect_args={"check_same_thread": False},
+        poolclass=StaticPool,
+        future=True,
+    )
+    create_tables(engine)
+    population = InMemoryPopulationStore()
+    service = EvaluateService(
+        profiles=InMemoryProfileStore(),
+        scorer=scorer,
+        policies=policies_for_tests(),
+        session_factory=make_session_factory(engine),
+        profile_write_mode="sync",
+        population=population,
+    )
+    service.evaluate(_req(tenant_id="lenient", application_id="lenient-app"))
+
+    assert population.get("lenient", []).total == 1
+    assert population.get("roku-bank", []).total == 0

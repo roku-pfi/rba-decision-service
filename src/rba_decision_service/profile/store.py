@@ -5,7 +5,7 @@ from __future__ import annotations
 import json
 from typing import Protocol
 
-from rba_features.population import TOTAL_FIELD, PopulationCounts, learn_population
+from rba_features.population import TOTAL_FIELD, PopulationCounts, learn_population, population_key
 from rba_features.profile import ProfileState, profile_from_dict, profile_to_dict
 
 try:
@@ -59,47 +59,51 @@ class RedisProfileStore:
 
 
 class PopulationStore(Protocol):
-    """The deployment's learned-login counters (ADR-0042, rba_features.population)."""
+    """Each tenant's learned-login counters (ADR-0042, ADR-0046, rba_features.population)."""
 
-    def get(self, fields: list[str]) -> PopulationCounts: ...
+    def get(self, tenant_id: str, fields: list[str]) -> PopulationCounts: ...
 
-    def learn(self, event: dict) -> None: ...
+    def learn(self, tenant_id: str, event: dict) -> None: ...
 
 
 class InMemoryPopulationStore:
     def __init__(self) -> None:
-        self._data: dict[str, int] = {}
+        self._data: dict[str, dict[str, int]] = {}
 
-    def get(self, fields: list[str]) -> PopulationCounts:
+    def get(self, tenant_id: str, fields: list[str]) -> PopulationCounts:
+        data = self._data.get(tenant_id, {})
         return PopulationCounts(
-            total=self._data.get(TOTAL_FIELD, 0),
-            counts={f: self._data[f] for f in fields if f in self._data},
+            total=data.get(TOTAL_FIELD, 0),
+            counts={f: data[f] for f in fields if f in data},
         )
 
-    def learn(self, event: dict) -> None:
-        learn_population(event, self._hincrby)
+    def learn(self, tenant_id: str, event: dict) -> None:
+        data = self._data.setdefault(tenant_id, {})
 
-    def _hincrby(self, field: str, amount: int) -> int:
-        self._data[field] = self._data.get(field, 0) + amount
-        return self._data[field]
+        def hincrby(field: str, amount: int) -> int:
+            data[field] = data.get(field, 0) + amount
+            return data[field]
+
+        learn_population(event, hincrby)
 
 
 class RedisPopulationStore:
-    """One hash; a single HMGET per evaluation (the login's values + the total)."""
+    """One hash per tenant; a single HMGET per evaluation (the login's values + the total)."""
 
     def __init__(self, url: str, key: str = "rba:population") -> None:
         if redis is None:  # pragma: no cover
             raise RuntimeError("redis package is required for RedisPopulationStore")
         self._client = redis.Redis.from_url(url, decode_responses=True)
-        self._key = key
+        self._base = key
 
-    def get(self, fields: list[str]) -> PopulationCounts:
-        raw = self._client.hmget(self._key, [*fields, TOTAL_FIELD])
+    def get(self, tenant_id: str, fields: list[str]) -> PopulationCounts:
+        raw = self._client.hmget(population_key(self._base, tenant_id), [*fields, TOTAL_FIELD])
         *values, total = raw
         return PopulationCounts(
             total=int(total or 0),
             counts={f: int(v) for f, v in zip(fields, values) if v},
         )
 
-    def learn(self, event: dict) -> None:
-        learn_population(event, lambda field, amount: self._client.hincrby(self._key, field, amount))
+    def learn(self, tenant_id: str, event: dict) -> None:
+        key = population_key(self._base, tenant_id)
+        learn_population(event, lambda field, amount: self._client.hincrby(key, field, amount))

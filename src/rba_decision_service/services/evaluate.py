@@ -118,7 +118,7 @@ class EvaluateService:
                 raise RuntimeError("scorer not loaded")
 
             with stage("population_read"):
-                population = self._population_for(event)
+                population = self._population_for(request.tenant_id, event)
             with stage("score"):
                 prediction = self.scorer.predict(event, profile, population)
             risk_score = prediction.risk_score
@@ -235,7 +235,9 @@ class EvaluateService:
             and self.profile_write_mode == "sync"
             and learn_at_decision(request.login_successful, enforced.value)
         ):
-            self._learn_sync(request.user_id, request.to_feature_event(), profile)
+            self._learn_sync(
+                request.user_id, request.tenant_id, request.to_feature_event(), profile
+            )
 
         return response
 
@@ -285,7 +287,7 @@ class EvaluateService:
             except Exception:
                 logger.exception("profile read failed on confirm user_id=%s", user_id)
             else:
-                self._learn_sync(user_id, snapshot.to_feature_event(), profile)
+                self._learn_sync(user_id, decision.tenant_id, snapshot.to_feature_event(), profile)
         return LoginConfirmResponse(event_id=request.event_id, confirmed=True)
 
     def _record_failure(
@@ -317,8 +319,8 @@ class EvaluateService:
             except Exception:
                 logger.warning("failed login not counted event_id=%s", request.event_id)
 
-    def _population_for(self, event: dict[str, Any]) -> PopulationCounts | None:
-        """The deployment's counts for this login's values (ADR-0042).
+    def _population_for(self, tenant_id: str, event: dict[str, Any]) -> PopulationCounts | None:
+        """The tenant's counts for this login's values (ADR-0042, ADR-0046).
 
         Unreadable counts mean scoring against the training population alone,
         as the model did before; that is a weaker prior, not a reason to fall back.
@@ -326,17 +328,21 @@ class EvaluateService:
         if self.population is None:
             return None
         try:
-            return self.population.get([*population_fields(event), *hier_read_fields(event)])
+            return self.population.get(
+                tenant_id, [*population_fields(event), *hier_read_fields(event)]
+            )
         except Exception:
             logger.warning("population counts unavailable; training prior only")
             return None
 
-    def _learn_sync(self, user_id: str, event: dict[str, Any], profile: ProfileState) -> None:
+    def _learn_sync(
+        self, user_id: str, tenant_id: str, event: dict[str, Any], profile: ProfileState
+    ) -> None:
         updated = update_profile(deepcopy(profile), event)
         try:
             self.profiles.put(user_id, updated)
             if self.population is not None and event.get("login_successful") is not False:
-                self.population.learn(event)
+                self.population.learn(tenant_id, event)
         except Exception:
             logger.exception("profile sync write failed user_id=%s", user_id)
 

@@ -23,7 +23,7 @@ PEP → POST /risk/evaluate   (tenant_id names the tenant, ADR-0033)
         → load ProfileState (Redis key rba:profile:{user_id})
         → compute_features (rba-features)   # current event NOT in profile
         → compute_travel (rba-features)     # country-centroid rule, not Freeman
-        → FreemanOnlineScorer (JSON artifact, β=5; population = rba:population, κ=100, ADR-0042)
+        → FreemanOnlineScorer (JSON artifact, β=5; population = rba:population:{tenant_id}, κ=100, ADR-0042/0046)
         → reasons from top LLR contributions + soft rules
         → apply_policy (score → level → action)
         → travel/VPN escalate ALLOW → REQUIRE_MFA (ADR-0022)
@@ -238,7 +238,7 @@ Matches `../rba-contracts/examples/evaluate-request.json`.
 |---|---|---|
 | `REDIS_URL` | `redis://localhost:6379/0` | `memory://` → in-process store |
 | `REDIS_KEY_PREFIX` | `rba:profile:` | |
-| `REDIS_POPULATION_KEY` | `rba:population` | learned-login counts, Freeman's population (ADR-0042) |
+| `REDIS_POPULATION_KEY` | `rba:population` | base of the per-tenant learned-login counts, `<base>:<tenant_id>` (ADR-0042, ADR-0046) |
 | `DATABASE_URL` | `postgresql+psycopg://rba:rba@localhost:5432/rba_decision` | created by `rba-infra` init |
 | `USE_MEMORY_DB` | `false` | sqlite StaticPool for tests |
 | `POLICY_SEED_DIR` | `config/policies` | seeds tenants with no policy row |
