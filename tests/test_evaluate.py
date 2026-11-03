@@ -470,3 +470,19 @@ def test_a_wrong_password_on_a_known_device_is_the_owners(scorer):
     keys = _keys("roku-bank", "198.51.100.88", "u-own")
     assert len(guard._sets[keys["own_fails"]]) == 1
     assert len(guard._sets[keys["foreign_fails"]]) == 1
+
+
+def test_always_passkey_floors_what_is_enforced_not_the_verdict(service: EvaluateService):
+    """RF-08 (ADR-0048): a usual login still asks for the passkey; the engine's
+    own verdict is recorded as it judged it, with the rule as a reason."""
+    t0 = datetime(2020, 6, 1, 12, 0, tzinfo=timezone.utc)
+    service.profiles.put("u-always", _home_profile(t0))
+    req = dict(user_id="u-always", tenant_id="lenient", application_id="lenient-app")
+    plain = service.evaluate(_req(event_id=uuid4(), **req))
+    always = service.evaluate(_req(event_id=uuid4(), step_up_required=True, **req))
+
+    assert plain.enforced_action.value == "ALLOW"
+    assert always.action == plain.action
+    assert always.enforced_action.value == "REQUIRE_MFA"
+    assert "always_passkey" in {r.code for r in always.reasons}
+    assert "always_passkey" not in {r.code for r in plain.reasons}

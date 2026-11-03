@@ -47,6 +47,7 @@ from rba_decision_service.scoring.logreg import LogRegOnlineScorer, SupervisedPr
 from rba_decision_service.services.escalate import escalate
 from rba_decision_service.services.reasons import (
     guard_signals,
+    always_passkey_reason,
     maybe_low_history,
     new_device_reason,
     reasons_from_contributions,
@@ -212,6 +213,11 @@ class EvaluateService:
         # also lands on the base policy: watching the engine must not start
         # acting on users because Redis hiccuped.
         enforced = enforced_action(action, policy)
+        # RF-08 (ADR-0048): the user or application always asks for the
+        # passkey, in every engine mode. The verdict stays the engine's.
+        if request.step_up_required:
+            enforced = escalate(enforced, Action.REQUIRE_MFA)
+            reason_models.append(always_passkey_reason())
 
         response = RiskEvaluateResponse(
             event_id=request.event_id,

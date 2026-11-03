@@ -117,6 +117,15 @@ def supervised_reason(
     )
 
 
+def always_passkey_reason() -> Reason:
+    """RF-08: an access rule, not a risk signal; the engine's verdict is unchanged."""
+    return Reason(
+        code="always_passkey",
+        signal="policy",
+        detail="the user or the application always asks for the passkey",
+    )
+
+
 def new_device_reason() -> Reason:
     """RF-02: the user has known devices and this is not one. Informational:
     cookies get cleared and devices replaced, so it adds no risk."""
