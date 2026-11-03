@@ -23,8 +23,14 @@ from rba_contracts import (
     enforced_action,
 )
 from rba_contracts.enums import Action
+from rba_contracts.model import ModelPrediction, SignalContribution
 from rba_contracts.events import DECISION_MADE_CHANNEL, LOGIN_CONFIRMED_CHANNEL
-from rba_features.features import compute_features, learn_at_decision, update_profile
+from rba_features.features import (
+    compute_features,
+    device_known,
+    learn_at_decision,
+    update_profile,
+)
 from rba_features.population import PopulationCounts, hier_read_fields, population_fields
 from rba_features.profile import ProfileState
 from rba_features.travel import TravelSignals, compute_travel
@@ -42,6 +48,7 @@ from rba_decision_service.services.escalate import escalate
 from rba_decision_service.services.reasons import (
     guard_signals,
     maybe_low_history,
+    new_device_reason,
     reasons_from_contributions,
     supervised_reason,
     travel_reasons,
@@ -77,9 +84,11 @@ class EvaluateService:
         supervised: LogRegOnlineScorer | None = None,
         fallback_risk_score: float = 0.0,
         population: PopulationStore | None = None,
+        known_device_llr: float = -2.302585,
     ) -> None:
         self.profiles = profiles
         self.population = population
+        self.known_device_llr = known_device_llr
         self.scorer = scorer
         self.policies = policies
         self.journal = journal if journal is not None else InMemoryJournal()
@@ -106,6 +115,7 @@ class EvaluateService:
         risk_score = self.fallback_risk_score
         travel: TravelSignals | None = None
         supervised: SupervisedPrediction | None = None
+        known_device: bool | None = None
 
         try:
             with stage("profile_read"):
@@ -121,10 +131,14 @@ class EvaluateService:
                 population = self._population_for(request.tenant_id, event)
             with stage("score"):
                 prediction = self.scorer.predict(event, profile, population)
+            known_device = device_known(profile, event)
+            prediction = self._with_device(prediction, known_device)
             risk_score = prediction.risk_score
             model_version = prediction.model_version
             feature_schema_version = prediction.feature_schema_version
             reasons = reasons_from_contributions(prediction.contributions)
+            if known_device is False and profile is not None and profile.known_devices:
+                reasons.append(new_device_reason())
             if self.supervised is not None:
                 supervised = self.supervised.predict(features_dict)
             low = maybe_low_history(int(features_dict["user_login_count"]))
@@ -218,7 +232,7 @@ class EvaluateService:
             FeatureVectorV1.model_validate(features_dict) if features_dict else None
         )
         if not request.login_successful:
-            self._record_failure(request, features_dict, policy)
+            self._record_failure(request, features_dict, policy, known_device=bool(known_device))
 
         # Idempotent replay: the event_id keys the journal, so a replay gets the
         # prior decision back instead of a second record (ADR-0044).
@@ -295,15 +309,19 @@ class EvaluateService:
         request: RiskEvaluateRequest,
         features: dict[str, Any] | None,
         policy: TenantPolicy,
+        *,
+        known_device: bool = False,
     ) -> None:
         """Count a wrong password against its source and, by context, its account.
 
-        Familiar means a network the user has logged in from (IP or ASN). Without
-        features (scorer fallback) it counts as foreign: a step-up, never a pause.
-        The event id is the member, so a replay does not count twice.
+        Familiar means a network the user has logged in from (IP or ASN), or a
+        device they completed a login on (RF-02). Without features (scorer
+        fallback) it counts as foreign: a step-up, never a pause. The event id
+        is the member, so a replay does not count twice.
         """
-        familiar = bool(features) and bool(
-            features.get("ip_seen_before") or features.get("asn_seen_before")
+        familiar = known_device or (
+            bool(features)
+            and bool(features.get("ip_seen_before") or features.get("asn_seen_before"))
         )
         with stage("guard"):
             try:
@@ -318,6 +336,35 @@ class EvaluateService:
                 )
             except Exception:
                 logger.warning("failed login not counted event_id=%s", request.event_id)
+
+    def _with_device(self, prediction: ModelPrediction, known: bool | None) -> ModelPrediction:
+        """RF-02 (ADR-0047): a known device lowers the log-risk by a fixed term.
+
+        The model never saw device ids, so this is not a Freeman likelihood:
+        it is a designed term, shown as its own contribution. An unknown or
+        missing device changes nothing.
+        """
+        if not known or prediction.logrisk is None:
+            return prediction
+        logrisk = prediction.logrisk + self.known_device_llr
+        contributions = sorted(
+            [
+                *prediction.contributions,
+                SignalContribution(
+                    signal="device_id",
+                    contribution=self.known_device_llr,
+                    detail="device the user completed a login on",
+                ),
+            ],
+            key=lambda s: -abs(s.contribution),
+        )
+        return prediction.model_copy(
+            update={
+                "logrisk": logrisk,
+                "risk_score": FreemanOnlineScorer.logrisk_to_proba(logrisk),
+                "contributions": contributions,
+            }
+        )
 
     def _population_for(self, tenant_id: str, event: dict[str, Any]) -> PopulationCounts | None:
         """The tenant's counts for this login's values (ADR-0042, ADR-0046).
@@ -362,6 +409,7 @@ class EvaluateService:
             os=request.os,
             browser=request.browser,
             login_successful=request.login_successful,
+            device_id=request.device_id,
         )
         event = DecisionMadeEvent(
             event_id=response.event_id,

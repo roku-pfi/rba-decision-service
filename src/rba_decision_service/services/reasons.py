@@ -117,6 +117,17 @@ def supervised_reason(
     )
 
 
+def new_device_reason() -> Reason:
+    """RF-02: the user has known devices and this is not one. Informational:
+    cookies get cleared and devices replaced, so it adds no risk."""
+    return Reason(
+        code="device_new",
+        signal="device_id",
+        contribution=0.0,
+        detail="first completed login on this device would make it known",
+    )
+
+
 def maybe_low_history(login_count: int, threshold: int = 3) -> Reason | None:
     if login_count < threshold:
         return Reason(

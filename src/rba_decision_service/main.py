@@ -180,6 +180,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             profile_write_mode=settings.profile_write_mode,
             guard=_build_guard(settings),
             supervised=supervised,
+            known_device_llr=settings.known_device_llr,
         )
         yield
 

@@ -23,6 +23,10 @@ class Settings(BaseSettings):
     redis_key_prefix: str = "rba:profile:"
     # ADR-0042: the deployment's learned-login counts (profile-service writes).
     redis_population_key: str = "rba:population"
+    # RF-02 (ADR-0047): added to Freeman's log-risk when the user completed a
+    # login on this device before. ln(1/10): ten times likelier the owner.
+    # An unknown device adds nothing.
+    known_device_llr: float = -2.302585
     # sync: update Redis after each decision (Phase 3 thin slice).
     # none: read-only (Phase 4 profile-service owns writes).
     profile_write_mode: Literal["sync", "none"] = "sync"

@@ -403,3 +403,70 @@ def test_population_is_per_tenant(scorer):
 
     assert population.get("lenient", []).total == 1
     assert population.get("roku-bank", []).total == 0
+
+
+# ---------------------------------------------------------------- RF-02 (ADR-0047)
+
+
+def _device_service(scorer, guard=None) -> EvaluateService:
+    from sqlalchemy import create_engine
+
+    engine = create_engine(
+        "sqlite+pysqlite://",
+        connect_args={"check_same_thread": False},
+        poolclass=StaticPool,
+        future=True,
+    )
+    create_tables(engine)
+    return EvaluateService(
+        profiles=InMemoryProfileStore(),
+        scorer=scorer,
+        policies=policies_for_tests(),
+        session_factory=make_session_factory(engine),
+        profile_write_mode="none",
+        **({"guard": guard} if guard is not None else {}),
+    )
+
+
+def _with_device(profile: ProfileState, device_id: str, ts: datetime) -> ProfileState:
+    profile.remember_device(device_id, ts.timestamp())
+    return profile
+
+
+def test_a_known_device_lowers_the_score_by_its_term(scorer):
+    t0 = datetime(2020, 6, 1, 12, 0, tzinfo=timezone.utc)
+    service = _device_service(scorer)
+    service.profiles.put("u-dev", _with_device(_home_profile(t0), "dev-home", t0))
+    away = dict(ip_address="198.51.100.77", asn="64500", user_id="u-dev")
+
+    unknown = service.evaluate(_req(event_id=uuid4(), device_id="dev-other", **away))
+    known = service.evaluate(_req(event_id=uuid4(), device_id="dev-home", **away))
+    none = service.evaluate(_req(event_id=uuid4(), **away))
+
+    assert known.risk_score < unknown.risk_score
+    assert none.risk_score == unknown.risk_score  # an unknown device adds nothing
+    device = [r for r in known.reasons if r.signal == "device_id"]
+    assert device and device[0].contribution == pytest.approx(service.known_device_llr)
+    assert [r.code for r in unknown.reasons if r.signal == "device_id"] == ["device_new"]
+    assert not [r for r in none.reasons if r.signal == "device_id"]
+
+
+def test_a_wrong_password_on_a_known_device_is_the_owners(scorer):
+    """ADR-0045 + RF-02: from an unfamiliar network but a known device, a
+    failure counts toward the owner's pause, not toward an attack step-up."""
+    from rba_decision_service.guard import InMemoryGuard
+
+    t0 = datetime(2020, 6, 1, 12, 0, tzinfo=timezone.utc)
+    guard = InMemoryGuard()
+    service = _device_service(scorer, guard)
+    service.profiles.put("u-own", _with_device(_home_profile(t0), "dev-home", t0))
+    away = dict(ip_address="198.51.100.88", asn="64501", user_id="u-own", login_successful=False)
+
+    service.evaluate(_req(event_id=uuid4(), device_id="dev-home", **away))
+    service.evaluate(_req(event_id=uuid4(), device_id="dev-attacker", **away))
+
+    from rba_decision_service.guard import _keys
+
+    keys = _keys("roku-bank", "198.51.100.88", "u-own")
+    assert len(guard._sets[keys["own_fails"]]) == 1
+    assert len(guard._sets[keys["foreign_fails"]]) == 1
