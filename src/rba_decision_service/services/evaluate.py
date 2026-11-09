@@ -162,6 +162,13 @@ class EvaluateService:
             ]
 
         now = request.timestamp.timestamp()
+        # A wrong password is counted before the guard is read, so the attempt
+        # that starts a pause or an IP block already answers with it. Otherwise
+        # the first refusal would come on the next attempt, and an attacker
+        # whose wrong passwords all said "incorrect" would learn that the one
+        # refused differently was right.
+        if not request.login_successful:
+            self._record_failure(request, features_dict, policy, known_device=bool(known_device))
         guard_state: GuardState | None = None
         with stage("guard"):
             try:
@@ -237,9 +244,6 @@ class EvaluateService:
         feature_model = (
             FeatureVectorV1.model_validate(features_dict) if features_dict else None
         )
-        if not request.login_successful:
-            self._record_failure(request, features_dict, policy, known_device=bool(known_device))
-
         # Idempotent replay: the event_id keys the journal, so a replay gets the
         # prior decision back instead of a second record (ADR-0044).
         with stage("journal"):

@@ -84,6 +84,25 @@ def test_the_owners_own_wrong_passwords_pause_the_account_for_a_while(freeman):
     assert "account_cooldown" not in _codes(after)
 
 
+def test_the_failure_that_starts_the_pause_already_answers_with_it(freeman):
+    """Every attempt from the fifth on says "paused", wrong password or right,
+    so the answer to the right one does not stand out (it would confirm it)."""
+    service = _service(freeman)
+    service.profiles.put("martin", _home_profile())
+    answers = [_fail(service, "martin", i, **HOME) for i in range(5)]
+    assert all("account_cooldown" not in _codes(a) for a in answers[:4])
+    assert "account_cooldown" in _codes(answers[4])
+    assert answers[4].enforced_action is Action.BLOCK
+    assert "account_cooldown" in _codes(_fail(service, "martin", 6, **HOME))
+
+
+def test_the_failure_that_blocks_an_ip_already_answers_with_it(freeman):
+    service = _service(freeman)
+    answers = [_fail(service, f"victim-{i % 4}", i, **_attacker(7)) for i in range(10)]
+    assert "source_blocked" not in _codes(answers[8])
+    assert "source_blocked" in _codes(answers[9])
+
+
 def test_a_replayed_failure_counts_once(freeman):
     service = _service(freeman)
     service.profiles.put("martin", _home_profile())
