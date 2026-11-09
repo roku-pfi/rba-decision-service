@@ -157,3 +157,20 @@ def test_the_summary_counts_in_the_store() -> None:
         assert sum(sum(h["counts"].values()) for h in body["hours"]) == 3
         assert body["countries"] == [{"country": "AR", "count": 3}]
         assert client.get("/decisions/summary").status_code == 422  # tenant is mandatory
+
+
+def test_load_scene_users_stay_out_of_reads_unless_asked() -> None:
+    """The presenter's load users would bury the tenant's real logins."""
+    with _client() as client:
+        now = datetime.now(timezone.utc)
+        client.post("/risk/evaluate", json=_req(user_id="usr-real", timestamp=now).model_dump(mode="json"))
+        for i in range(3):
+            client.post("/risk/evaluate", json=_req(user_id=f"load-user-{i}", timestamp=now).model_dump(mode="json"))
+        _publish(client)
+        assert client.get("/decisions/summary", params=BANK).json()["total"] == 1
+        assert client.get("/decisions/summary", params={**BANK, "include_load": True}).json()["total"] == 4
+        listed = client.get("/decisions", params=BANK).json()["items"]
+        assert [d["user_id"] for d in listed] == ["usr-real"]
+        assert len(client.get("/decisions", params={**BANK, "include_load": True}).json()["items"]) == 4
+        # Asking for one load user by name still finds it.
+        assert len(client.get("/decisions", params={**BANK, "user_id": "load-user-1"}).json()["items"]) == 1

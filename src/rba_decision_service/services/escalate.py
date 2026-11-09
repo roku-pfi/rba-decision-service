@@ -12,7 +12,7 @@ That is what keeps ``risk_score`` interpretable: it is always Freeman's number
 
 from __future__ import annotations
 
-from rba_contracts.enums import Action
+from rba_contracts.enums import Action, RiskLevel
 
 # Ascending severity. Index is the rank used by `escalate`.
 LADDER: tuple[Action, ...] = (
@@ -28,3 +28,16 @@ _RANK: dict[Action, int] = {action: i for i, action in enumerate(LADDER)}
 def escalate(action: Action, floor: Action) -> Action:
     """Return whichever of ``action`` / ``floor`` is more severe."""
     return action if _RANK[action] >= _RANK[floor] else floor
+
+
+# The level a rule's floor speaks for. A rule that asks for the passkey says
+# the login is at least medium risk, whatever the score said; the console shows
+# that level, and the score (still Freeman's) beside it.
+_LEVELS: tuple[RiskLevel, ...] = (RiskLevel.LOW, RiskLevel.MEDIUM, RiskLevel.HIGH, RiskLevel.CRITICAL)
+_FLOOR_LEVEL: dict[Action, RiskLevel] = dict(zip(LADDER, _LEVELS))
+
+
+def raise_level(level: RiskLevel, floor: Action) -> RiskLevel:
+    """``level`` raised to what ``floor`` (a rule's, never the policy's) implies."""
+    implied = _FLOOR_LEVEL[floor]
+    return level if _LEVELS.index(level) >= _LEVELS.index(implied) else implied

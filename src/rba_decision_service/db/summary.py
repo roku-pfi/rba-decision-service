@@ -35,9 +35,23 @@ def _as_utc(value) -> datetime:
     return value if value.tzinfo else value.replace(tzinfo=timezone.utc)
 
 
-def summarize(session: Session, tenant_id: str, since: datetime) -> DecisionSummary:
+# The presenter's load scene scores made-up users straight at the PDP
+# (rba-demo-banking, presenter.py). Thousands of them would bury the tenant's
+# real logins, so reads leave them out unless asked.
+LOAD_USER_PREFIX = "load-user-"
+
+
+def not_load():
+    return DecisionRow.user_id.not_like(f"{LOAD_USER_PREFIX}%")
+
+
+def summarize(
+    session: Session, tenant_id: str, since: datetime, *, include_load: bool = False
+) -> DecisionSummary:
     dialect = session.get_bind().dialect.name
     scope = (DecisionRow.tenant_id == tenant_id, DecisionRow.scored_at >= since)
+    if not include_load:
+        scope = (*scope, not_load())
 
     hour = _hour(dialect).label("hour")
     by_hour: dict[datetime, dict[str, int]] = defaultdict(dict)

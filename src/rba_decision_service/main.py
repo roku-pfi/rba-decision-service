@@ -32,7 +32,7 @@ from sqlalchemy import select
 
 from rba_decision_service.db.models import DecisionRow
 from rba_decision_service.db.session import make_engine, make_session_factory
-from rba_decision_service.db.summary import summarize
+from rba_decision_service.db.summary import not_load, summarize
 from rba_decision_service.guard import InMemoryGuard, RedisGuard
 from rba_decision_service.init import initialise
 from rba_decision_service.journal import InMemoryJournal, RedisJournal
@@ -222,6 +222,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         application_id: str | None = None,
         action: Action | None = None,
         limit: int = Query(default=50, ge=1, le=200),
+        include_load: bool = False,
     ) -> DecisionListResponse:
         service: EvaluateService = request.app.state.evaluate_service
         # ADR-0033: a decision read is always scoped to one tenant.
@@ -236,6 +237,8 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             stmt = stmt.where(DecisionRow.application_id == application_id)
         if action is not None:
             stmt = stmt.where(DecisionRow.action == action.value)
+        if not include_load and not user_id:
+            stmt = stmt.where(not_load())
         stmt = stmt.limit(limit)
         with service.session_factory() as session:
             rows = list(session.scalars(stmt))
@@ -244,13 +247,16 @@ def create_app(settings: Settings | None = None) -> FastAPI:
 
     @app.get("/decisions/summary", response_model=DecisionSummary)
     def summarize_decisions(
-        request: Request, tenant_id: str, days: int = Query(default=7, ge=1, le=31)
+        request: Request,
+        tenant_id: str,
+        days: int = Query(default=7, ge=1, le=31),
+        include_load: bool = False,
     ) -> DecisionSummary:
         """The console's Resumen, counted in the store (ADR-0033: one tenant)."""
         service: EvaluateService = request.app.state.evaluate_service
         since = datetime.now(timezone.utc) - timedelta(days=days)
         with service.session_factory() as session:
-            return summarize(session, tenant_id, since)
+            return summarize(session, tenant_id, since, include_load=include_load)
 
     @app.get("/decisions/{event_id}", response_model=DecisionRecord)
     def get_decision(event_id: UUID, tenant_id: str, request: Request) -> DecisionRecord:

@@ -44,7 +44,7 @@ from rba_decision_service.profile.store import PopulationStore, ProfileStore
 from rba_decision_service.scoring.hierarchical import HierarchicalScorer
 from rba_decision_service.scoring.freeman import FreemanOnlineScorer
 from rba_decision_service.scoring.logreg import LogRegOnlineScorer, SupervisedPrediction
-from rba_decision_service.services.escalate import escalate
+from rba_decision_service.services.escalate import escalate, raise_level
 from rba_decision_service.services.reasons import (
     guard_signals,
     always_passkey_reason,
@@ -190,18 +190,23 @@ class EvaluateService:
         # Rules and the supervised second opinion may only raise the action
         # (services/escalate). `risk_score` stays Freeman's number either way.
         rule_reasons: list[Reason] = []
+        # The most severe floor the rules (not the policy) set: it also raises
+        # the level shown, so a challenged impossible trip does not read "Bajo".
+        rule_floor = Action.ALLOW
         # Blocks and the step-up after an attack apply even when the scorer
         # fell back: they come from counters, not from the model (ADR-0045).
         if guard_state is not None:
             for reason, floor in guard_signals(guard_state, policy.lockout):
                 rule_reasons.append(reason)
                 action = escalate(action, floor)
+                rule_floor = escalate(rule_floor, floor)
 
         if not fallback:
             if travel is not None:
                 rule_reasons.extend(travel_reasons(travel))
                 if travel.impossible_travel or travel.vpn_or_hosting:
                     action = escalate(action, Action.REQUIRE_MFA)
+                    rule_floor = escalate(rule_floor, Action.REQUIRE_MFA)
 
             if supervised is not None and supervised.fired:
                 rule_reasons.append(
@@ -210,8 +215,10 @@ class EvaluateService:
                     )
                 )
                 action = escalate(action, Action.REQUIRE_MFA)
+                rule_floor = escalate(rule_floor, Action.REQUIRE_MFA)
 
         reason_models = rule_reasons + reason_models
+        level = raise_level(level, rule_floor)
 
         # ADR-0034. `action` is now the engine's final verdict and is recorded
         # whatever the mode. What the PEP enforces depends on the tenant: the

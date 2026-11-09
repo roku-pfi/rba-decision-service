@@ -12,7 +12,7 @@ from uuid import uuid4
 
 import pytest
 from rba_contracts import RiskEvaluateRequest
-from rba_contracts.enums import Action
+from rba_contracts.enums import Action, RiskLevel
 from rba_features.profile import ProfileState
 from sqlalchemy import create_engine
 from sqlalchemy.pool import StaticPool
@@ -266,3 +266,26 @@ def test_risk_score_stays_freemans_number(freeman, supervised):
 
     assert escalated.risk_score == plain.risk_score
     assert escalated.model_version == plain.model_version
+
+
+def test_a_rule_raises_the_level_shown_not_the_score(freeman, supervised):
+    """A login the rules challenge does not read "Bajo": the level follows the
+    rule's floor, the score stays the model's."""
+    service = _service(freeman, supervised)
+    uid = "user-level-raised"
+    service.profiles.put(uid, _home_profile())
+    resp = service.evaluate(_req(user_id=uid, country="DE", asn="3320", ip_address="198.51.100.7"))
+    assert resp.action is not Action.ALLOW
+    assert resp.risk_level is not RiskLevel.LOW
+    plain = _service(freeman)
+    plain.profiles.put(uid, _home_profile())
+    assert plain.evaluate(_req(user_id=uid, event_id=uuid4())).risk_level is RiskLevel.LOW
+
+
+def test_raise_level_follows_only_the_floor():
+    from rba_decision_service.services.escalate import raise_level
+
+    assert raise_level(RiskLevel.LOW, Action.ALLOW) is RiskLevel.LOW
+    assert raise_level(RiskLevel.LOW, Action.REQUIRE_MFA) is RiskLevel.MEDIUM
+    assert raise_level(RiskLevel.LOW, Action.BLOCK) is RiskLevel.CRITICAL
+    assert raise_level(RiskLevel.HIGH, Action.REQUIRE_MFA) is RiskLevel.HIGH
