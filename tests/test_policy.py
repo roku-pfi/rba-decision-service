@@ -102,6 +102,23 @@ def test_a_change_on_one_replica_reaches_the_others() -> None:
     assert restarted.get("roku-bank").engine_mode is EngineMode.ACTIVE
 
 
+def test_the_saved_policy_is_read_past_the_cache() -> None:
+    """The console reloads right after saving; another replica must not answer
+    with the version it still caches."""
+    factory = _shared_factory()
+    clock = _Clock()
+    replica_a = DbPolicyStore(factory, ttl_seconds=5.0, clock=clock)
+    replica_b = DbPolicyStore(factory, ttl_seconds=5.0, clock=clock)
+    replica_a.seed(load_policy_dir(SEED_DIR))
+    assert replica_b.get("roku-bank").engine_mode is EngineMode.MONITOR  # B caches MONITOR
+
+    replica_a.put(replica_a.get("roku-bank").model_copy(update={"engine_mode": EngineMode.ACTIVE}))
+
+    assert replica_b.stored("roku-bank").engine_mode is EngineMode.ACTIVE
+    assert replica_b.get("roku-bank").engine_mode is EngineMode.MONITOR  # logins: within the TTL
+    assert replica_b.stored("nobody") is None
+
+
 def test_seed_never_overwrites_an_operator_edit() -> None:
     factory = _shared_factory()
     store = DbPolicyStore(factory)

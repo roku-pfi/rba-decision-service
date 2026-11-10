@@ -203,7 +203,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     @app.get("/tenants/{tenant_id}/policy", response_model=TenantPolicy)
     def get_policy(tenant_id: str, request: Request) -> TenantPolicy:
         service: EvaluateService = request.app.state.evaluate_service
-        policy = service.policies.get(tenant_id)
+        policy = service.policies.stored(tenant_id)
         if policy is None:
             raise HTTPException(status_code=404, detail="no policy for this tenant")
         return policy

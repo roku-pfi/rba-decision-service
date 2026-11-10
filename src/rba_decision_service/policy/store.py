@@ -29,6 +29,10 @@ logger = logging.getLogger(__name__)
 class PolicySource(Protocol):
     def get(self, tenant_id: str) -> TenantPolicy | None: ...
 
+    def stored(self, tenant_id: str) -> TenantPolicy | None:
+        """The policy as saved, not as cached: what the console shows and edits."""
+        ...
+
     def put(self, policy: TenantPolicy) -> TenantPolicy: ...
 
 
@@ -39,6 +43,9 @@ class StaticPolicies:
         self._policies = {p.tenant_id: p for p in policies}
 
     def get(self, tenant_id: str) -> TenantPolicy | None:
+        return self._policies.get(tenant_id)
+
+    def stored(self, tenant_id: str) -> TenantPolicy | None:
         return self._policies.get(tenant_id)
 
     def put(self, policy: TenantPolicy) -> TenantPolicy:
@@ -72,6 +79,15 @@ class DbPolicyStore:
             policy = TenantPolicy.model_validate(row.policy) if row is not None else None
         self._cache[tenant_id] = (now + self._ttl, policy)
         return policy
+
+    def stored(self, tenant_id: str) -> TenantPolicy | None:
+        """Read the database, past the cache. The console reloads the policy right
+        after saving it, and that GET can reach a replica whose cache still holds
+        the previous version: the page would show the old mode as if the save
+        had been lost."""
+        with self._session_factory() as session:
+            row = session.get(TenantPolicyRow, tenant_id)
+            return TenantPolicy.model_validate(row.policy) if row is not None else None
 
     def refresh(self) -> None:
         """Reload every tenant's policy in one query."""
