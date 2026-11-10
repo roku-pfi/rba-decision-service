@@ -12,6 +12,7 @@ from fastapi import FastAPI, HTTPException, Query, Request
 from rba_contracts import (
     Action,
     DecisionMadeEvent,
+    DecisionImpact,
     DecisionSummary,
     DecisionListResponse,
     DecisionRecord,
@@ -32,7 +33,7 @@ from sqlalchemy import select
 
 from rba_decision_service.db.models import DecisionRow
 from rba_decision_service.db.session import make_engine, make_session_factory
-from rba_decision_service.db.summary import not_load, summarize
+from rba_decision_service.db.summary import impact, not_load, summarize
 from rba_decision_service.guard import InMemoryGuard, RedisGuard
 from rba_decision_service.init import initialise
 from rba_decision_service.journal import InMemoryJournal, RedisJournal
@@ -257,6 +258,19 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         since = datetime.now(timezone.utc) - timedelta(days=days)
         with service.session_factory() as session:
             return summarize(session, tenant_id, since, include_load=include_load)
+
+    @app.get("/decisions/impact", response_model=DecisionImpact)
+    def decision_impact(
+        request: Request,
+        tenant_id: str,
+        days: int = Query(default=30, ge=1, le=90),
+        utc_offset_minutes: int = Query(default=0, ge=-840, le=840),
+    ) -> DecisionImpact:
+        """The console's Efectividad: this tenant's logins, by what the engine did."""
+        service: EvaluateService = request.app.state.evaluate_service
+        since = datetime.now(timezone.utc) - timedelta(days=days)
+        with service.session_factory() as session:
+            return impact(session, tenant_id, since, utc_offset_minutes=utc_offset_minutes)
 
     @app.get("/decisions/{event_id}", response_model=DecisionRecord)
     def get_decision(event_id: UUID, tenant_id: str, request: Request) -> DecisionRecord:

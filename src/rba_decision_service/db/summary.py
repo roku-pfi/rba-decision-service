@@ -10,7 +10,7 @@ from __future__ import annotations
 from collections import defaultdict
 from datetime import datetime, timezone
 
-from rba_contracts import CountryCount, DecisionSummary, HourCount
+from rba_contracts import CountryCount, DecisionImpact, DecisionSummary, HourCount, ImpactDay
 from sqlalchemy import String, func, literal, select
 from sqlalchemy.orm import Session
 
@@ -92,3 +92,74 @@ def summarize(
         hours=[HourCount(hour=h, counts=c) for h, c in sorted(by_hour.items())],
         countries=countries,
     )
+
+
+def impact(
+    session: Session, tenant_id: str, since: datetime, *, utc_offset_minutes: int = 0
+) -> DecisionImpact:
+    """What the engine did for one tenant: the console's Efectividad.
+
+    On the verdict (``action``), not the enforced action, so a tenant still
+    in MONITOR sees what the engine would do. A step-up counts as verified
+    once passed (``step_up_passed_at``), else as stopped.
+    """
+    from datetime import timedelta
+
+    rows = session.execute(
+        select(
+            DecisionRow.action,
+            DecisionRow.step_up_passed_at,
+            DecisionRow.scored_at,
+            DecisionRow.login,
+            DecisionRow.reasons,
+            DecisionRow.engine_mode,
+        )
+        .where(DecisionRow.tenant_id == tenant_id, DecisionRow.scored_at >= since, not_load())
+        .order_by(DecisionRow.scored_at)
+    ).all()
+    shift = timedelta(minutes=utc_offset_minutes)
+    days: dict = defaultdict(lambda: {"allowed": 0, "verified": 0, "stopped": 0})
+    totals = defaultdict(int)
+    mode = None
+    for action, passed_at, scored_at, login, reasons, engine_mode in rows:
+        mode = engine_mode
+        codes = {r.get("code") for r in (reasons or []) if isinstance(r, dict)}
+        if isinstance(login, dict) and login.get("login_successful") is False:
+            totals["wrong"] += 1
+            if "source_blocked" in codes:
+                totals["wrong_blocked"] += 1
+            continue
+        day = days[(_as_utc(scored_at) + shift).date()]
+        totals["right"] += 1
+        if action == "ALLOW":
+            totals["allowed"] += 1
+            day["allowed"] += 1
+        elif action == "BLOCK":
+            totals["blocked"] += 1
+            day["stopped"] += 1
+        elif passed_at is not None:
+            totals["verified"] += 1
+            day["verified"] += 1
+        else:
+            totals["step_up"] += 1
+            day["stopped"] += 1
+    return DecisionImpact(
+        since=since,
+        engine_mode=mode,
+        right_password=totals["right"],
+        allowed=totals["allowed"],
+        verified=totals["verified"],
+        stopped_step_up=totals["step_up"],
+        stopped_blocked=totals["blocked"],
+        wrong_password=totals["wrong"],
+        wrong_password_from_blocked_ip=totals["wrong_blocked"],
+        days=[ImpactDay(day=d, **days[d]) for d in _every_day(since + shift, datetime.now(timezone.utc) + shift)],
+    )
+
+
+def _every_day(start: datetime, end: datetime) -> list:
+    """Each local day in the period, so quiet days show as empty, not skipped."""
+    from datetime import timedelta
+
+    first, last = start.date(), end.date()
+    return [first + timedelta(days=i) for i in range((last - first).days + 1)]

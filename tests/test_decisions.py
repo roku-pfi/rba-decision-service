@@ -174,3 +174,44 @@ def test_load_scene_users_stay_out_of_reads_unless_asked() -> None:
         assert len(client.get("/decisions", params={**BANK, "include_load": True}).json()["items"]) == 4
         # Asking for one load user by name still finds it.
         assert len(client.get("/decisions", params={**BANK, "user_id": "load-user-1"}).json()["items"]) == 1
+
+
+def test_impact_counts_what_the_engine_did_for_one_tenant() -> None:
+    """Efectividad: right-password logins by the engine's verdict, per tenant."""
+    from rba_decision_service.db.models import DecisionRow
+
+    now = datetime.now(timezone.utc)
+
+    def row(tenant, user, action, *, ok=True, passed=False, reasons=()):
+        return DecisionRow(
+            event_id=uuid4(), tenant_id=tenant, application_id="app", user_id=user,
+            risk_score=0.1, risk_level="LOW", action=action, enforced_action=action,
+            engine_mode="ACTIVE", simulated=False, model_version="m", policy_version="p",
+            feature_schema_version="f", fallback=False,
+            reasons=[{"code": c, "signal": "s"} for c in reasons],
+            login={"login_successful": ok}, scored_at=now,
+            step_up_passed_at=now if passed else None,
+        )
+
+    with _client() as client:
+        with client.app.state.evaluate_service.session_factory() as session:
+            session.add_all([
+                row("roku-bank", "a", "ALLOW"),
+                row("roku-bank", "a", "ALLOW"),
+                row("roku-bank", "a", "REQUIRE_MFA", passed=True),
+                row("roku-bank", "x", "REAUTHENTICATE"),
+                row("roku-bank", "x", "BLOCK"),
+                row("roku-bank", "x", "BLOCK", ok=False, reasons=["source_blocked"]),
+                row("roku-bank", "x", "ALLOW", ok=False),
+                row("roku-bank", "load-user-1", "ALLOW"),
+                row("kaze-labs", "k", "ALLOW"),
+            ])
+            session.commit()
+        body = client.get("/decisions/impact", params=BANK).json()
+    assert (body["right_password"], body["allowed"], body["verified"]) == (5, 2, 1)
+    assert (body["stopped_step_up"], body["stopped_blocked"]) == (1, 1)
+    assert (body["wrong_password"], body["wrong_password_from_blocked_ip"]) == (2, 1)
+    assert len(body["days"]) == 31  # every day of the 30-day period, quiet ones empty
+    day = body["days"][-1]
+    assert (day["allowed"], day["verified"], day["stopped"]) == (2, 1, 2)
+    assert sum(d["allowed"] for d in body["days"][:-1]) == 0
